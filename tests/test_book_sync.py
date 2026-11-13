@@ -107,6 +107,30 @@ class TestEbook(unittest.TestCase):
         self.assertNotIn("General Terms", text)
         self.assertTrue(text.startswith("Chapter 1"))
 
+    def test_gutenberg_license_heading_not_used_as_chapter(self):
+        # Real PG EPUBs (e.g. #7256): a title page, then one file holding the story AND
+        # the license, whose first heading is the license title.
+        def doc(body):
+            return f'<html xmlns="http://www.w3.org/1999/xhtml"><body>{body}</body></html>'
+        story = "".join(f"<p>Story paragraph {i} with some words in it.</p>" for i in range(5))
+        docs = [doc("<h1>The Project Gutenberg eBook of Test</h1><p>Intro.</p>"
+                    "<p>*** START OF THE PROJECT GUTENBERG EBOOK TEST ***</p>"
+                    "<h1>The Test Story</h1><p>by Someone</p>"),
+                doc(f"{story}<p>*** END OF THE PROJECT GUTENBERG EBOOK TEST ***</p>"
+                    "<h2>THE FULL PROJECT GUTENBERG LICENSE</h2><p>Terms.</p>")]
+        p = self.tmp / "pg.epub"
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("META-INF/container.xml",
+                       '<container><rootfiles><rootfile full-path="c.opf"/></rootfiles></container>')
+            z.writestr("c.opf", '<package><metadata><title>T</title></metadata><manifest>'
+                       '<item id="a" href="a.xhtml"/><item id="b" href="b.xhtml"/></manifest>'
+                       '<spine><itemref idref="a"/><itemref idref="b"/></spine></package>')
+            z.writestr("a.xhtml", docs[0])
+            z.writestr("b.xhtml", docs[1])
+        book = bs.load_book(p)
+        self.assertEqual(book.chapters, ["The Test Story"])
+        self.assertNotIn("LICENSE", " ".join(t.text for t in book.tokens))
+
     def test_txt_chapters(self):
         p = self.tmp / "b.txt"
         p.write_text("Chapter 1\n\nIt was night.\n\nShe walked.\n\nChapter 2\n\nMorning came.\n")

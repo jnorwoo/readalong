@@ -8,7 +8,7 @@ words, spelling and punctuation instead of the transcription.
 
 Output (next to --out, default: named after the book):
   <name>.lrc        plain LRC, one timed line per display line
-  <name>.sync.json  lines + per-word timings + chapters (used by player.html)
+  <name>.sync.json  lines + per-word timings + chapters (used by web/index.html and web/glasses.html)
 
 Usage:
   python book_sync.py "Book.m4b" --book "Book.epub"
@@ -239,7 +239,9 @@ def strip_gutenberg(docs: list[tuple[str | None, list[str]]]) -> list[tuple[str 
     for d, (heading, paras) in enumerate(docs):
         kept = [p for k, (dd, i, p) in enumerate(flat) if dd == d and k in keep]
         if kept:
-            out.append((heading if heading and not PG_START.search(heading) else None, kept))
+            # Keep a heading only if it survived stripping; Gutenberg EPUBs often put the
+            # whole story in the license file, whose first heading is the license title.
+            out.append((heading if heading in kept else None, kept))
     return out
 
 
@@ -256,8 +258,12 @@ def load_book(path: Path) -> Book:
     docs = strip_gutenberg(docs)
     book = Book(title=title)
     para_no = 0
-    for ch_no, (heading, paras) in enumerate(docs):
-        book.chapters.append(heading or f"Section {ch_no + 1}")
+    for heading, paras in docs:
+        # An untitled document continues the previous chapter (EPUBs often split
+        # chapters into several files); only the first one gets a fallback name.
+        if heading or not book.chapters:
+            book.chapters.append(heading or (paras[0] if len(paras[0].split()) <= 8 else "Section 1"))
+        ch_no = len(book.chapters) - 1
         for p in paras:
             for w in p.split():
                 book.tokens.append(Token(text=w, norm=norm_word(w), para=para_no, chapter=ch_no))
@@ -631,7 +637,7 @@ def main(argv: list[str] | None = None) -> None:
 
     log(f"wrote {lrc_path}")
     log(f"wrote {json_path}  ({len(lines):,} lines, {len(data['chapters'])} chapters)")
-    log("open player.html, then load the audio and the .sync.json file.")
+    log("add it to the web library with tools/add_to_library.py, or open web/index.html and load the audio and .sync.json.")
 
 
 if __name__ == "__main__":

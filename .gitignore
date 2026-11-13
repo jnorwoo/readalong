@@ -1,8 +1,8 @@
 # Books you own: never commit these (copyright). They stay on your computer.
 web/books/private/
 web/library.private.json
-books/
-examples/
+/books/
+/examples/
 *.aax
 *.aaxc
 

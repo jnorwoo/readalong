@@ -17,10 +17,10 @@ Pipeline:
 pip install -r requirements.txt               # whisperx (pulls in torch)
 python tools/fetch_example.py [--device cpu]  # Gutenberg example: download, sync, add to library
 python tools/serve.py [--lan]                 # http://localhost:8000 and /glasses.html
-python -m unittest discover tests -v          # 9 tests, no GPU/WhisperX needed (ffmpeg needed for 1)
+python -m unittest discover tests -v          # 10 tests, no GPU/WhisperX needed (ffmpeg needed for 1)
 ```
 
-## Status (as handed off from a claude.ai chat)
+## Status
 
 Tested and working:
 - EPUB/TXT parsing, chapter detection, Project Gutenberg header/license stripping.
@@ -29,10 +29,12 @@ Tested and working:
 - Both web apps in headless Chromium: loading, playback, word highlighting, line seeking, chapters, options menu, resume position, library loading, 600×600 layout, light/dark (index.html), phone width.
 - `tools/serve.py` range requests (206 responses).
 
-NOT yet tested (do these first):
-1. **A real WhisperX run.** The sandbox couldn't download models. `Transcriber` in `book_sync.py` uses the standard whisperx API (`load_model`, `load_audio`, `transcribe`, `load_align_model`, `align`, reading `word_segments`). Run `python tools/fetch_example.py` and fix any API mismatch with the installed whisperx version. Check the reported coverage (expect >85%) and listen to a few spots in the player to confirm timing.
-2. **The real Gutenberg files.** URLs are in `tools/fetch_example.py` (text: ebook 7256 EPUB; audio: ebook 22440 MP3). Confirm they download and that the recording matches the text edition. If the audio starts with a spoken intro, that's expected and handled.
-3. **The glasses app on Meta's simulator and hardware.** See "Meta Ray-Ban Display" below.
+- **Real WhisperX run** (Nov 2026, Windows 11, RTX 3070 8 GB): whisperx 3.8.6 with torch 2.8.0+cu128 and large-v3 worked with no API changes. Gift of the Magi: 2,012 of 2,065 words matched directly, all timed. Spot check (re-transcribing line clips with a different model) confirmed line timings. The Gutenberg URLs in `fetch_example.py` work and the recording matches the text edition.
+- Windows setup notes: `pip install whisperx` installs CPU torch; reinstall `torch==2.8.0 torchaudio==2.8.0 torchvision==0.23.0` from `https://download.pytorch.org/whl/cu128` (`--no-deps --force-reinstall`). ffmpeg via `winget install Gyan.FFmpeg` (open a new shell for PATH). The torchcodec "Could not load libtorchcodec" warning from pyannote is harmless (audio is decoded by ffmpeg). Import torch before using faster-whisper directly, or ctranslate2 can't find `cublas64_12.dll`.
+- Gutenberg EPUBs put the story in the same file as the license; chapter titles now come only from headings that survive boilerplate stripping, and untitled files continue the previous chapter.
+
+NOT yet tested:
+1. **The glasses app on Meta's simulator and hardware.** See "Meta Ray-Ban Display" below.
 
 ## Meta Ray-Ban Display facts (verified Nov 2026 from developers.meta.com)
 
@@ -52,8 +54,8 @@ Open questions to check in Meta's docs:
 
 ## Next steps (suggested order)
 
-1. Real WhisperX run on the example; fix issues; commit `web/books/gift-of-the-magi/` and `web/library.json`.
-2. Push to GitHub, enable Pages (Settings → Pages → Source: GitHub Actions). The workflow `.github/workflows/pages.yml` runs tests, then deploys `web/` without private books.
+1. ~~Real WhisperX run on the example~~ (done; repo is github.com/jnorwoo/readalong).
+2. Enable Pages (Settings → Pages → Source: GitHub Actions). The workflow `.github/workflows/pages.yml` runs tests, then deploys `web/` without private books.
 3. Test `glasses.html` in Meta's simulator, then on the glasses via the Pages URL. Adjust font sizes / `MAX_WORDS` (currently 7) for legibility.
 4. Add a service worker so a downloaded book plays offline on the glasses.
 5. Private books on the glasses without publishing them, e.g. a local HTTPS server or a tunnel, depending on what the glasses accept.
