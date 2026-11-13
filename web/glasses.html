@@ -45,7 +45,11 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
 .list li .a { font-size: 19px; color: var(--dim); margin-top: 4px; }
 .list li.sel { border-color: var(--focus); }
 .list li.sel .t { color: var(--spoken); }
+.list li .a .tag { color: var(--faint); }
 .msg { font-size: 22px; line-height: 1.4; color: var(--dim); }
+/* Google Drive sign-in */
+#connect .big { font-size: 34px; font-weight: 700; color: var(--text); margin: 6px 0 22px; }
+#connect .code { font-size: 54px; font-weight: 700; letter-spacing: 4px; color: var(--spoken); margin: 6px 0 22px; }
 .hint { margin-top: auto; font-size: 18px; color: var(--faint); }
 
 /* reader */
@@ -90,6 +94,12 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
     <p class="hint" id="libHint" hidden>Up and down to choose. Select to open.</p>
   </section>
 
+  <section class="screen" id="connect" aria-label="Connect Google Drive">
+    <h1>Connect Google Drive</h1>
+    <div id="connectBody"><p class="msg">Getting a code…</p></div>
+    <p class="hint">Back to cancel.</p>
+  </section>
+
   <section class="screen" id="reader" aria-label="Reader">
     <div class="top"><span class="title" id="rTitle"></span><span id="rPct"></span></div>
     <div class="bar"><i id="rBar"></i></div>
@@ -109,6 +119,8 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
 
 <audio id="audio" preload="auto"></audio>
 
+<script src="cloud-config.js"></script>
+<script src="cloud.js"></script>
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -139,12 +151,28 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
     if (!r.ok) throw new Error(r.status);
     return r.json();
   }
+  const Cloud = window.ReadalongCloud || { enabled: false, signedIn: () => false };
+  const CONNECT = { connect: true, title: "Connect Google Drive", author: "Play your own books from your Drive" };
+
   async function loadLibrary() {
     const books = [];
     for (const [url, priv] of [["library.json", false], ["library.private.json", true]]) {
       try { const d = await fetchJSON(url); (d.books || []).forEach((b) => books.push({ ...b, private: priv })); } catch {}
     }
+    if (Cloud.enabled && Cloud.signedIn()) {
+      try {
+        for (const b of await Cloud.listBooks()) { b.offline = await Cloud.isDownloaded(b); books.push(b); }
+      } catch (e) {
+        // Offline: still list Drive books seen before that are downloaded on this device.
+        for (const b of store.get("readalong:drive-books") || []) {
+          if (await Cloud.isDownloaded(b)) { b.offline = true; books.push(b); }
+        }
+      }
+      store.set("readalong:drive-books", books.filter((b) => b.drive));
+    }
+    if (Cloud.enabled && !Cloud.signedIn()) books.push(CONNECT);
     st.books = books;
+    st.sel = Math.min(st.sel, Math.max(0, books.length - 1));
     const want = new URLSearchParams(location.search).get("book");
     if (want) {
       const i = books.findIndex((b) => b.id === want);
@@ -153,16 +181,52 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
     renderLibrary();
   }
   function renderLibrary() {
-    $("books").innerHTML = st.books.map((b, i) =>
-      `<li class="${i === st.sel ? "sel" : ""}"><div class="t">${esc(b.title)}</div>${b.author ? `<div class="a">${esc(b.author)}</div>` : ""}</li>`).join("");
-    $("libMsg").textContent = st.books.length ? "" : "No books yet. Run tools/fetch_example.py, then reload.";
-    $("libMsg").hidden = !!st.books.length;
+    $("books").innerHTML = st.books.map((b, i) => {
+      const tag = b.drive ? `<span class="tag">${b.author ? " · " : ""}Drive${b.offline ? ", downloaded" : ""}</span>` : "";
+      const sub = b.author || tag ? `<div class="a">${esc(b.author || "")}${tag}</div>` : "";
+      return `<li class="${i === st.sel ? "sel" : ""}"><div class="t">${esc(b.title)}</div>${sub}</li>`;
+    }).join("");
+    const sel = $("books").children[st.sel];
+    if (sel) sel.scrollIntoView({ block: "nearest" });
+    if (!st.loading) {
+      $("libMsg").textContent = st.books.length ? "" : "No books yet. Run tools/fetch_example.py, then reload.";
+      $("libMsg").hidden = !!st.books.length;
+    }
     $("libHint").hidden = !st.books.length;
   }
   function show(screen) {
     st.screen = screen;
-    $("library").classList.toggle("on", screen === "library");
-    $("reader").classList.toggle("on", screen === "reader");
+    for (const s of ["library", "connect", "reader"]) $(s).classList.toggle("on", screen === s);
+  }
+
+  // ---------- Google Drive sign-in: a code to enter on the phone ----------
+  let signIn = null;
+  async function connectDrive() {
+    show("connect");
+    $("connectBody").innerHTML = `<p class="msg">Getting a code…</p>`;
+    try {
+      signIn = await Cloud.startSignIn();
+      if (st.screen !== "connect") { signIn.cancel(); signIn = null; return; }
+      $("connectBody").innerHTML =
+        `<p class="msg">On your phone, go to</p><div class="big">${esc(signIn.url.replace(/^https?:\/\/(www\.)?/, ""))}</div>` +
+        `<p class="msg">and enter</p><div class="code">${esc(signIn.code)}</div>`;
+      const ok = await signIn.done;
+      signIn = null;
+      if (ok) {
+        $("connectBody").innerHTML = `<p class="msg">Connected.</p>`;
+        st.sel = 0;
+        await loadLibrary();
+        show("library");
+      }
+    } catch (e) {
+      signIn = null;
+      if (st.screen === "connect") $("connectBody").innerHTML = `<p class="msg">${esc(e.message)}</p>`;
+    }
+  }
+  function cancelConnect() {
+    if (signIn) { signIn.cancel(); signIn = null; }
+    show("library");
+    renderLibrary();
   }
 
   // ---------- chunking lines for the small display ----------
@@ -193,30 +257,59 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
   }
 
   // ---------- opening a book ----------
+  let download = null;   // AbortController while a Drive book downloads
   async function openBook(b) {
+    if (b.connect) return connectDrive();
     if (st.loading) return;
     st.loading = true;
     $("libMsg").hidden = false;
     $("libMsg").textContent = "Opening " + b.title + "…";
     try {
-      const data = await fetchJSON(b.sync);
+      let data, src;
+      if (b.drive) {
+        download = new AbortController();
+        const got = await Cloud.getBook(b, {
+          signal: download.signal,
+          onProgress: (p) => { $("libMsg").textContent = `Downloading ${b.title}… ${Math.round(p * 100)}%  (Back to cancel)`; },
+        });
+        b.offline = true;
+        data = JSON.parse(got.sync);
+        if (audio.src.startsWith("blob:")) URL.revokeObjectURL(audio.src);
+        src = URL.createObjectURL(got.audio);
+      } else {
+        data = await fetchJSON(b.sync);
+        src = b.audio;
+      }
       st.book = b;
       st.chunks = chunkLines((data.lines || []).filter((l) => typeof l.start === "number"));
       st.starts = st.chunks.map((c) => c.start);
       st.idx = -1;
-      audio.src = b.audio;
-      const saved = store.get("readalong:" + b.id) || {};
+      st.touched = false;   // set once you play or move; until then, never save (it would overwrite your place with 0)
+      // This device's place, unless another device (via Google Drive) saved a newer one.
+      let saved = store.get("readalong:" + b.id) || {};
+      const remote = Cloud.enabled && Cloud.signedIn() ? await Cloud.getPosition(b.id) : null;
+      if (remote && (remote.at || 0) > (saved.at || 0)) saved = remote;
+      audio.src = src;
       st.offset = saved.offset || 0;
       st.speedIdx = SPEEDS.indexOf(saved.speed) >= 0 ? SPEEDS.indexOf(saved.speed) : 2;
       audio.playbackRate = SPEEDS[st.speedIdx];
-      if (saved.pos) audio.addEventListener("loadedmetadata", () => { audio.currentTime = saved.pos; }, { once: true });
+      if (saved.pos) {
+        if (audio.readyState >= 1) audio.currentTime = saved.pos;
+        else audio.addEventListener("loadedmetadata", () => { audio.currentTime = saved.pos; }, { once: true });
+      }
       $("rTitle").textContent = b.title;
+      $("libMsg").textContent = "";
       show("reader");
       update();
     } catch (e) {
-      $("libMsg").textContent = "Couldn’t open that book. Check that its files are in web/books.";
+      $("libMsg").textContent = e.name === "AbortError" ? "Download cancelled."
+        : e.signedOut ? "Connect Google Drive again to open this book."
+        : b.drive ? "Couldn’t download that book: " + e.message
+        : "Couldn’t open that book. Check that its files are in web/books.";
+      if (e.signedOut) loadLibrary();
     } finally {
       st.loading = false;
+      download = null;
     }
   }
 
@@ -255,21 +348,28 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
   }
   let raf = 0;
   function loop() { update(); raf = requestAnimationFrame(loop); }
-  audio.addEventListener("play", () => { cancelAnimationFrame(raf); loop(); });
-  audio.addEventListener("pause", () => { cancelAnimationFrame(raf); update(); save(); });
+  audio.addEventListener("play", () => { st.touched = true; cancelAnimationFrame(raf); loop(); });
+  audio.addEventListener("pause", () => { cancelAnimationFrame(raf); update(); save(true); });
   audio.addEventListener("seeked", update);
   audio.addEventListener("ended", update);
 
   function seekChunk(delta) {
+    st.touched = true;
     const i = Math.max(0, Math.min(st.chunks.length - 1, st.idx + delta));
     audio.currentTime = Math.max(0, st.chunks[i].start - st.offset + 0.01);
     update();
   }
-  function save() {
-    if (st.book) store.set("readalong:" + st.book.id, { pos: audio.currentTime, offset: st.offset, speed: SPEEDS[st.speedIdx] });
+  // Saved on the glasses every 5 s while playing; synced to Google Drive (if connected)
+  // at most every 30 s, and right away on pause or when the app is hidden.
+  function save(urgent) {
+    if (!st.book || !st.touched) return;
+    const rec = { pos: audio.currentTime, offset: st.offset, speed: SPEEDS[st.speedIdx], at: Date.now() };
+    store.set("readalong:" + st.book.id, rec);
+    if (Cloud.enabled) Cloud.savePosition(st.book.id, rec, urgent === true);
   }
   setInterval(() => { if (!audio.paused) save(); }, 5000);
-  addEventListener("pagehide", save);
+  addEventListener("pagehide", () => save(true));
+  document.addEventListener("visibilitychange", () => { if (document.hidden) save(true); });
 
   // ---------- options menu ----------
   const menuItems = [
@@ -277,11 +377,24 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
       adjust: (d) => { st.speedIdx = Math.max(0, Math.min(SPEEDS.length - 1, st.speedIdx + d)); audio.playbackRate = SPEEDS[st.speedIdx]; } },
     { label: "Text timing", value: () => (st.offset > 0 ? "+" : "") + st.offset.toFixed(2) + "s",
       adjust: (d) => { st.offset = Math.round((st.offset + d * 0.25) * 100) / 100; st.idx = -1; } },
-    { label: "Back 30 seconds", action: true, run: () => { audio.currentTime = Math.max(0, audio.currentTime - 30); } },
+    { label: "Back 30 seconds", action: true, run: () => { st.touched = true; audio.currentTime = Math.max(0, audio.currentTime - 30); } },
     { label: "Library", action: true, run: () => { closeMenu(); audio.pause(); show("library"); renderLibrary(); } },
+    { label: "Remove download", action: true, when: () => st.book && st.book.drive && st.book.offline,
+      run: async () => {
+        // Frees space on the glasses; the book stays in Google Drive.
+        closeMenu(); audio.pause(); save(true);
+        const b = st.book;
+        if (audio.src.startsWith("blob:")) URL.revokeObjectURL(audio.src);
+        audio.removeAttribute("src"); audio.load();
+        await Cloud.removeDownload(b);
+        b.offline = false;
+        st.book = null;
+        show("library"); renderLibrary();
+      } },
   ];
+  const visibleItems = () => menuItems.filter((m) => !m.when || m.when());
   function renderMenu() {
-    $("menuRows").innerHTML = menuItems.map((m, i) =>
+    $("menuRows").innerHTML = visibleItems().map((m, i) =>
       `<div class="row ${m.action ? "action" : ""} ${i === st.menuSel ? "sel" : ""}"><span>${m.label}</span><span class="v">${m.value ? m.value() : ""}</span></div>`).join("");
   }
   function openMenu() { st.menuOpen = true; st.menuSel = 0; $("menu").classList.add("on"); renderMenu(); }
@@ -293,7 +406,13 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
     if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", " ", "Escape", "Backspace"].includes(k)) return;
     e.preventDefault();
 
+    if (st.screen === "connect") {
+      if (k === "Escape" || k === "Backspace") cancelConnect();
+      return;
+    }
+
     if (st.screen === "library") {
+      if (download && (k === "Escape" || k === "Backspace")) return download.abort();
       if (!st.books.length) return;
       if (k === "ArrowUp") st.sel = (st.sel - 1 + st.books.length) % st.books.length;
       else if (k === "ArrowDown") st.sel = (st.sel + 1) % st.books.length;
@@ -303,9 +422,10 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
     }
 
     if (st.menuOpen) {
-      const m = menuItems[st.menuSel];
+      const items = visibleItems();
+      const m = items[st.menuSel];
       if (k === "ArrowUp") st.menuSel = Math.max(0, st.menuSel - 1);
-      else if (k === "ArrowDown") st.menuSel = Math.min(menuItems.length - 1, st.menuSel + 1);
+      else if (k === "ArrowDown") st.menuSel = Math.min(items.length - 1, st.menuSel + 1);
       else if ((k === "ArrowLeft" || k === "ArrowRight") && m.adjust) m.adjust(k === "ArrowLeft" ? -1 : 1);
       else if ((k === "Enter" || k === " ") && m.action) { m.run(); if (st.menuOpen) closeMenu(); return; }
       else if (k === "Escape" || k === "Backspace" || ((k === "Enter" || k === " ") && !m.action)) return closeMenu();
@@ -321,6 +441,7 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
   });
 
   loadLibrary();
+  if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
 })();
 </script>
 </body>

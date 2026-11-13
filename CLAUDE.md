@@ -9,7 +9,8 @@ A read-along app for audiobooks: the ebook's text is shown in sync with the audi
 Pipeline:
 1. `tools/book_sync.py` transcribes the audiobook with WhisperX (word timestamps) in cached chunks, then aligns the transcript to the ebook's real text and writes `<name>.lrc` and `<name>.sync.json`.
 2. `tools/add_to_library.py` copies audio + sync into `web/books/<id>/` and updates `web/library.json` (or the git-ignored `web/books/private/` + `web/library.private.json` with `--private`).
-3. `web/index.html` (desktop/phone) and `web/glasses.html` (glasses) read the library and play books. Both are single-file, no build step, no framework.
+3. `web/index.html` (desktop/phone) and `web/glasses.html` (glasses) read the library and play books. No build step, no framework.
+4. Optional Google Drive (`web/cloud.js`, shared by both pages; setup in `docs/google-drive.md`): users add their own books (audio + sync.json) to a "Read-along" Drive folder from the web app, and reading positions sync across devices via `progress.json` there. Sign-in is Google's device-code flow (code entered at google.com/device), which works on the glasses' D-pad. Scope is `drive.file` only. Opened Drive books are cached in Cache Storage for offline play; `web/sw.js` caches the app shell. `web/cloud-config.js` stays empty in git; the Pages workflow fills it from the `GOOGLE_CLIENT_ID` variable and `GOOGLE_CLIENT_SECRET` secret.
 
 ## Commands
 
@@ -18,6 +19,7 @@ pip install -r requirements.txt               # whisperx (pulls in torch)
 python tools/fetch_example.py [--device cpu]  # Gutenberg example: download, sync, add to library
 python tools/serve.py [--lan]                 # http://localhost:8000 and /glasses.html
 python -m unittest discover tests -v          # 10 tests, no GPU/WhisperX needed (ffmpeg needed for 1)
+python tests/mock_google.py                   # fake Google sign-in + Drive on :8765 for testing cloud.js (see docs/google-drive.md)
 ```
 
 ## Status
@@ -33,8 +35,11 @@ Tested and working:
 - Windows setup notes: `pip install whisperx` installs CPU torch; reinstall `torch==2.8.0 torchaudio==2.8.0 torchvision==0.23.0` from `https://download.pytorch.org/whl/cu128` (`--no-deps --force-reinstall`). ffmpeg via `winget install Gyan.FFmpeg` (open a new shell for PATH). The torchcodec "Could not load libtorchcodec" warning from pyannote is harmless (audio is decoded by ffmpeg). Import torch before using faster-whisper directly, or ctranslate2 can't find `cublas64_12.dll`.
 - Gutenberg EPUBs put the story in the same file as the license; chapter titles now come only from headings that survive boilerplate stripping, and untitled files continue the previous chapter.
 
+- Google Drive features (Nov 2026) against `tests/mock_google.py` in Chromium: device-code sign-in on both pages, resumable chunked upload, listing, download into Cache Storage, playback from the cached blob, position sync both ways (newer wins), token refresh, glasses "Remove download".
+
 NOT yet tested:
 1. **The glasses app on Meta's simulator and hardware.** See "Meta Ray-Ban Display" below.
+2. **Google Drive against real Google.** Needs the user's Cloud project (docs/google-drive.md). Unverified assumptions: Google's upload server exposes the `Location`/`Range` headers to browsers (cloud.js falls back sensibly if `Range` is hidden); Drive answers `alt=media` downloads with CORS; device-flow client works from a browser (CORS preflight to oauth2.googleapis.com was checked and passes).
 
 ## Meta Ray-Ban Display facts (verified Nov 2026 from developers.meta.com)
 
@@ -57,15 +62,15 @@ Open questions to check in Meta's docs:
 1. ~~Real WhisperX run on the example~~ (done; repo is github.com/jnorwoo/readalong).
 2. Enable Pages (Settings → Pages → Source: GitHub Actions). The workflow `.github/workflows/pages.yml` runs tests, then deploys `web/` without private books.
 3. Test `glasses.html` in Meta's simulator, then on the glasses via the Pages URL. Adjust font sizes / `MAX_WORDS` (currently 7) for legibility.
-4. Add a service worker so a downloaded book plays offline on the glasses.
-5. Private books on the glasses without publishing them, e.g. a local HTTPS server or a tunnel, depending on what the glasses accept.
+4. ~~Service worker / offline~~ and ~~private books on the glasses~~: done via Google Drive (`web/cloud.js`). Test with real Google and on the glasses.
+5. Check on the glasses: Cache Storage quota for large books (Meta's docs give none), and whether audio keeps playing when the display sleeps.
 6. Optional: Meta AI voice control (WebMCP-style tools like play, pause, "go back a sentence"), currently off by default on devices and enabled per device in developer mode.
 7. Optional: share the sync format with Cue.
 
 ## Constraints
 
 - **Copyright:** only public-domain books may be committed or published. Purchased books stay in git-ignored `web/books/private/`. Never add tools for removing DRM (Audible AAX, Kindle).
-- Keep the web apps single-file and buildless unless there's a strong reason; GitHub Pages serves `web/` as-is.
+- Keep the web apps buildless; GitHub Pages serves `web/` as-is. Each page is one file, except the shared optional Google Drive code in `web/cloud.js` (+ `cloud-config.js`, `sw.js`).
 - Pin exact versions for any CDN script added.
 - Keep `book_sync.py` importable without whisperx installed (the import is lazy) so tests run without a GPU.
 

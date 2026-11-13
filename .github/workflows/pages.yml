@@ -37,6 +37,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Leave private books out of the site
         run: rm -rf web/books/private web/library.private.json
+      - name: Fill in Google Drive settings (optional, see docs/google-drive.md)
+        env:
+          CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+        run: |
+          if [ -n "$CLIENT_ID" ]; then
+            python3 -c 'import json, os; open("web/cloud-config.js", "w").write("window.READALONG_CLOUD = " + json.dumps({"clientId": os.environ["CLIENT_ID"], "clientSecret": os.environ.get("CLIENT_SECRET", "")}) + ";\n")'
+            echo "Google Drive features on."
+          else
+            echo "No GOOGLE_CLIENT_ID variable; Google Drive features stay off."
+          fi
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

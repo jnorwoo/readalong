@@ -16,6 +16,8 @@ Comes with a public-domain example from Project Gutenberg: *The Gift of the Magi
 | `tools/serve.py` | Runs the web apps locally (with the audio seeking support browsers need) |
 | `web/index.html` | Read-along player for computer and phone |
 | `web/glasses.html` | Read-along app for Meta Ray-Ban Display (600×600, controlled with Neural Band) |
+| `web/cloud.js` | Optional Google Drive library + reading-position sync, shared by both apps |
+| `docs/google-drive.md` | How to set up Google Drive |
 | `tests/` | Tests for the syncing logic (no GPU or WhisperX needed) |
 
 ## Quick start
@@ -43,6 +45,8 @@ python tools/add_to_library.py my-book "My Book.m4b" "My Book.sync.json" --priva
 
 `--private` keeps the book in `web/books/private/`, which is never committed to git or published. Private books show up when you run the app locally with `tools/serve.py`.
 
+To play your own books on the glasses or your phone, keep them in **Google Drive** instead: add the audio and its `.sync.json` from the web app, and every device you connect can play them offline and pick up where you left off. One-time setup: [docs/google-drive.md](docs/google-drive.md).
+
 ## On Meta Ray-Ban Display
 
 Meta Ray-Ban Display glasses run web apps opened from a URL (developer mode required). This repo publishes `web/` to GitHub Pages automatically, so after you push:
@@ -53,7 +57,7 @@ Meta Ray-Ban Display glasses run web apps opened from a URL (developer mode requ
 
 Without the hardware, try it in Meta's [Ray-Ban Display Web App Simulator](https://chromewebstore.google.com/detail/meta-ray-ban-display-simu/jpjlmmodokemlepklkdbimceggpbjcll) for Chrome.
 
-**Glasses controls:** Select (Enter) plays and pauses. Left and right move back or forward a line. Up opens options: speed, text timing, back 30 seconds, and the library.
+**Glasses controls:** Select (Enter) plays and pauses. Left and right move back or forward a line. Up opens options: speed, text timing, back 30 seconds, the library, and (for Drive books) removing the download. Back (Escape) returns to the library.
 
 Note: the regular Ray-Ban Meta glasses (without a display) can't show text, so this needs the Display model.
 

@@ -1,6 +1,7 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "readalong", "runtimeExecutable": "python", "runtimeArgs": ["tools/serve.py"], "port": 8000 }
+    { "name": "readalong", "runtimeExecutable": "python", "runtimeArgs": ["tools/serve.py"], "port": 8000 },
+    { "name": "mock-google", "runtimeExecutable": "python", "runtimeArgs": ["tests/mock_google.py"], "port": 8765 }
   ]
 }

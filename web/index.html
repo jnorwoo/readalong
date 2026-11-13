@@ -126,6 +126,13 @@ button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-c
 #libList button { width: 100%; text-align: left; border-radius: 12px; padding: 0.7rem 0.9rem; }
 #libList .t { font-family: var(--read); font-weight: 600; display: block; }
 #libList .a { color: var(--muted); font-size: 0.9rem; }
+#libList .tag { color: var(--muted); font-size: 0.8rem; margin-left: 0.4rem; }
+#driveBox { margin-top: 1.6rem; border-top: 1px solid var(--line); padding-top: 1.2rem; }
+#driveBox h3 { font-size: 1rem; margin: 0 0 0.5rem; color: var(--muted); font-weight: 400; }
+#driveBox p { margin: 0 0 0.9rem; font-size: 0.95rem; }
+#driveBox .code { font: 700 1.6rem/1.2 var(--ui); letter-spacing: 0.08em; color: var(--ink); display: block; margin: 0.4rem 0; }
+#driveBox a { color: var(--lamp); }
+#driveBox .linkish { border: none; padding: 0.55rem 0.4rem; color: var(--muted); text-decoration: underline; }
 .status { margin-top: 1rem; font-size: 0.95rem; color: var(--muted); min-height: 1.4em; }
 .status.error { color: #c0392b; }
 @media (prefers-color-scheme: dark) { .status.error { color: #ff8a7a; } }
@@ -262,6 +269,10 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
       <h3>Or open a book from your library</h3>
       <ul id="libList"></ul>
     </div>
+    <div id="driveBox" hidden>
+      <h3>Your books in Google Drive</h3>
+      <div id="driveBody"></div>
+    </div>
   </div>
 </main>
 
@@ -308,6 +319,8 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
 
 <audio id="audio" preload="metadata"></audio>
 
+<script src="cloud-config.js"></script>
+<script src="cloud.js"></script>
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -325,7 +338,9 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
     get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
   };
-  const keyFor = () => "readalong:" + (state.bookId || state.title || state.audioName || "book");
+  const bookKey = () => state.bookId || state.title || state.audioName || "book";
+  const keyFor = () => "readalong:" + bookKey();
+  const Cloud = window.ReadalongCloud || { enabled: false, signedIn: () => false };
 
   // ---------- formatting ----------
   function clock(t) {
@@ -427,6 +442,7 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
   }
 
   // ---------- library (works when served, e.g. python tools/serve.py) ----------
+  let library = [];
   async function loadLibrary() {
     const books = [];
     for (const url of ["library.json", "library.private.json"]) {
@@ -435,25 +451,118 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
         if (r.ok) (await r.json()).books.forEach((b) => books.push(b));
       } catch {}
     }
-    if (!books.length) return;
+    if (Cloud.enabled && Cloud.signedIn()) {
+      try {
+        for (const b of await Cloud.listBooks()) {
+          b.offline = await Cloud.isDownloaded(b);
+          books.push(b);
+        }
+      } catch (e) {
+        if (e.signedOut) renderDrive(); else setStatus("Couldn’t list your Drive books: " + e.message, true);
+      }
+    }
+    library = books;
+    $("libBox").hidden = !books.length;
     $("libList").innerHTML = books.map((b, i) =>
-      `<li><button data-i="${i}"><span class="t">${esc(b.title)}</span>${b.author ? `<span class="a">${esc(b.author)}</span>` : ""}</button></li>`).join("");
-    $("libBox").hidden = false;
-    $("libList").onclick = (e) => {
-      const btn = e.target.closest("button"); if (!btn) return;
-      const b = books[+btn.dataset.i];
-      state.bookId = b.id;
-      state.audioFile = { name: b.audio };
-      state.audioName = b.audio.split("/").pop();
-      audio.src = b.audio;
-      applySync(b.sync, async () => {
-        const r = await fetch(b.sync, { cache: "no-cache" });
-        if (!r.ok) throw new Error("Couldn’t load " + b.sync + ". Re-run tools/add_to_library.py for this book.");
-        return r.text();
-      });
-    };
+      `<li><button data-i="${i}"><span class="t">${esc(b.title)}` +
+      (b.drive ? `<span class="tag">Google Drive${b.offline ? " · on this device" : ""}</span>` : "") +
+      `</span>${b.author ? `<span class="a">${esc(b.author)}</span>` : ""}</button></li>`).join("");
   }
+  $("libList").onclick = (e) => {
+    const btn = e.target.closest("button"); if (!btn) return;
+    const b = library[+btn.dataset.i];
+    if (b.drive) return openDriveBook(b);
+    state.bookId = b.id;
+    state.audioFile = { name: b.audio };
+    state.audioName = b.audio.split("/").pop();
+    audio.src = b.audio;
+    applySync(b.sync, async () => {
+      const r = await fetch(b.sync, { cache: "no-cache" });
+      if (!r.ok) throw new Error("Couldn’t load " + b.sync + ". Re-run tools/add_to_library.py for this book.");
+      return r.text();
+    });
+  };
   loadLibrary();
+
+  // ---------- Google Drive (cloud.js; hidden unless cloud-config.js has a client ID) ----------
+  let busy = false;
+  async function openDriveBook(b) {
+    if (busy) return;
+    busy = true;
+    setStatus("Opening " + b.title + "…");
+    try {
+      const got = await Cloud.getBook(b, {
+        onProgress: (p) => setStatus(`Downloading ${b.title}: ${Math.round(p * 100)}%`),
+      });
+      setStatus("");
+      state.bookId = b.id;
+      loadAudio(new File([got.audio], b.title, { type: got.audio.type }));
+      await applySync(b.title + ".sync.json", async () => got.sync);
+    } catch (e) {
+      setStatus(e.signedOut ? "Connect Google Drive again to open this book." : "Couldn’t open that book: " + e.message, true);
+      if (e.signedOut) renderDrive();
+    } finally { busy = false; }
+  }
+
+  let signIn = null;
+  function renderDrive(extra) {
+    if (!Cloud.enabled) return;
+    $("driveBox").hidden = false;
+    const body = $("driveBody");
+    if (signIn) {
+      body.innerHTML = `<p>On your phone or computer, go to <a href="${esc(signIn.url)}" target="_blank" rel="noopener">${esc(signIn.url.replace(/^https?:\/\/(www\.)?/, ""))}</a> and enter this code:
+        <span class="code">${esc(signIn.code)}</span>Waiting for you to approve…</p>
+        <div class="picks"><button id="driveCancel">Cancel</button></div>`;
+      $("driveCancel").onclick = () => { signIn.cancel(); signIn = null; renderDrive(); };
+    } else if (!Cloud.signedIn()) {
+      body.innerHTML = `<p>Keep your own audiobooks in your Google Drive so your glasses and other devices can play them, and pick up where you left off. The app can only see files it adds itself.</p>
+        <div class="picks"><button id="driveConnect">Connect Google Drive</button></div>${extra || ""}`;
+      $("driveConnect").onclick = connectDrive;
+    } else {
+      body.innerHTML = `<p>Connected. Add a book by choosing its audio file and its .sync.json together.</p>
+        <div class="picks">
+          <label>Add a book to Drive<input type="file" id="driveAdd" multiple accept="audio/*,.m4b,.m4a,.mp3,.ogg,.opus,.flac,.wav,.json,application/json"></label>
+          <button class="linkish" id="driveOut">Disconnect</button>
+        </div>${extra || ""}`;
+      $("driveAdd").onchange = (e) => addToDrive([...e.target.files]);
+      $("driveOut").onclick = () => { Cloud.signOut(); renderDrive(); loadLibrary(); };
+    }
+  }
+
+  async function connectDrive() {
+    try {
+      signIn = await Cloud.startSignIn();
+      renderDrive();
+      const ok = await signIn.done;
+      signIn = null;
+      if (ok) { renderDrive(); loadLibrary(); }
+    } catch (e) {
+      signIn = null;
+      renderDrive(`<p class="status error">${esc(e.message)}</p>`);
+    }
+  }
+
+  async function addToDrive(files) {
+    const audioF = files.find((f) => /^audio\//.test(f.type) || /\.(m4b|m4a|mp3|ogg|opus|flac|wav|aac)$/i.test(f.name));
+    const syncF = files.find((f) => /\.json$/i.test(f.name));
+    if (!audioF || !syncF) return setStatus("Choose both files at once: the audiobook and its .sync.json.", true);
+    if (busy) return;
+    busy = true;
+    try {
+      setStatus(`Uploading ${audioF.name}…`);
+      await Cloud.addBook(audioF, syncF, {
+        onProgress: (p) => setStatus(`Uploading ${audioF.name}: ${Math.round(p * 100)}%`),
+      });
+      setStatus("Added to your Google Drive. It’s in the library now, here and on your other devices.");
+      loadLibrary();
+    } catch (e) {
+      setStatus("Upload failed: " + e.message, true);
+      if (e.signedOut) renderDrive();
+    } finally { busy = false; }
+  }
+  renderDrive();
+
+  if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
 
   $("audioIn").addEventListener("change", (e) => e.target.files[0] && loadAudio(e.target.files[0]));
   $("syncIn").addEventListener("change", (e) => e.target.files[0] && loadSync(e.target.files[0]));
@@ -488,16 +597,29 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
     if (saved) {
       state.offset = saved.offset || 0;
       $("offset").textContent = state.offset.toFixed(1) + "s";
-      if (saved.pos > 5) {
-        const r = $("resume");
-        r.textContent = "Resume at " + clock(saved.pos);
-        r.classList.add("show");
-        r.onclick = () => { seekTo(saved.pos); r.classList.remove("show"); };
-      }
+      if (saved.pos > 5) showResume(saved.pos, "");
       if (saved.speed) { $("speed").value = String(saved.speed); audio.playbackRate = saved.speed; }
     }
+    state.touched = false;   // set once you play or move; until then, never save (it would overwrite your place with 0)
     renderWindow(0);
     update(true);
+    // A newer position from another device (Google Drive) wins over this device's.
+    if (Cloud.enabled && Cloud.signedIn()) {
+      const key = bookKey();
+      Cloud.getPosition(key).then((remote) => {
+        if (!remote || key !== bookKey() || remote.pos <= 5) return;
+        if (saved && (saved.at || 0) >= (remote.at || 0)) return;
+        if (Math.abs(remote.pos - audio.currentTime) < 5) return;
+        showResume(remote.pos, " (from your other device)");
+      });
+    }
+  }
+
+  function showResume(pos, note) {
+    const r = $("resume");
+    r.textContent = "Resume at " + clock(pos) + note;
+    r.classList.add("show");
+    r.onclick = () => { seekTo(pos); r.classList.remove("show"); };
   }
 
   audio.addEventListener("loadedmetadata", () => {
@@ -584,12 +706,12 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
 
   let raf = 0;
   function loop() { update(false); raf = requestAnimationFrame(loop); }
-  audio.addEventListener("play", () => { $("play").textContent = "❚❚"; $("play").setAttribute("aria-label", "Pause"); cancelAnimationFrame(raf); loop(); });
-  audio.addEventListener("pause", () => { $("play").textContent = "▶"; $("play").setAttribute("aria-label", "Play"); cancelAnimationFrame(raf); update(false); save(); });
+  audio.addEventListener("play", () => { state.touched = true; $("play").textContent = "❚❚"; $("play").setAttribute("aria-label", "Pause"); cancelAnimationFrame(raf); loop(); });
+  audio.addEventListener("pause", () => { $("play").textContent = "▶"; $("play").setAttribute("aria-label", "Play"); cancelAnimationFrame(raf); update(false); save(true); });
   audio.addEventListener("seeked", () => update(true));
 
   // ---------- controls ----------
-  function seekTo(t) { audio.currentTime = Math.max(0, Math.min(t, audio.duration || t)); state.follow = true; $("follow").classList.remove("show"); update(true); }
+  function seekTo(t) { state.touched = true; audio.currentTime = Math.max(0, Math.min(t, audio.duration || t)); state.follow = true; $("follow").classList.remove("show"); update(true); }
   function toggle() { audio.paused ? audio.play() : audio.pause(); }
   $("play").onclick = toggle;
   $("back").onclick = () => seekTo(audio.currentTime - 15);
@@ -644,12 +766,17 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
   });
 
   // ---------- remember place ----------
-  function save() {
-    if (!state.syncLoaded) return;
-    store.set(keyFor(), { pos: audio.currentTime, offset: state.offset, speed: audio.playbackRate });
+  // Saved on this device every 5 s while playing; synced to Google Drive (if connected)
+  // at most every 30 s, and right away on pause or when the page is hidden.
+  function save(urgent) {
+    if (!state.syncLoaded || !state.touched) return;
+    const rec = { pos: audio.currentTime, offset: state.offset, speed: audio.playbackRate, at: Date.now() };
+    store.set(keyFor(), rec);
+    if (Cloud.enabled) Cloud.savePosition(bookKey(), rec, urgent === true);
   }
   setInterval(() => { if (!audio.paused) save(); }, 5000);
-  addEventListener("pagehide", save);
+  addEventListener("pagehide", () => save(true));
+  document.addEventListener("visibilitychange", () => { if (document.hidden) save(true); });
 })();
 </script>
 </body>
