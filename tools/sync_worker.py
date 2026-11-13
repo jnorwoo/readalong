@@ -39,6 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SCOPE = "https://www.googleapis.com/auth/drive.file"
 DEFAULT_CONFIG = Path.home() / ".readalong" / "worker.json"
 WORK_DIR = Path.home() / ".readalong" / "jobs"
+PYTHON = sys.executable      # the Python that runs book_sync.py; set by sync_python() at startup
 
 
 def log(msg: str) -> None:
@@ -194,6 +195,27 @@ class Drive:
                             body=body, headers={"Content-Type": f"multipart/related; boundary={b}"})["id"]
 
 
+def sync_python() -> str:
+    """The Python that has WhisperX: this one, or the project's .venv if this one doesn't.
+
+    The helper itself only needs the standard library, so it may well be started
+    with the system Python while WhisperX lives in the project's virtual environment.
+    """
+    venv = ROOT / ".venv"
+    candidates = [sys.executable, str(venv / "Scripts" / "python.exe"), str(venv / "bin" / "python")]
+    for py in candidates:
+        if not Path(py).exists():
+            continue
+        ok = subprocess.run([py, "-c", "import importlib.util, sys; "
+                             "sys.exit(0 if importlib.util.find_spec('whisperx') else 1)"],
+                            capture_output=True).returncode == 0
+        if ok:
+            return py
+    sys.exit("error: WhisperX isn't installed for this Python, and there's no .venv in the readalong "
+             "folder that has it. Install it (see README: pip install -r requirements.txt), or start "
+             "this helper with the Python that has it, e.g. .venv\\Scripts\\python tools\\sync_worker.py")
+
+
 def tagged(v: str) -> str:
     return f"appProperties has {{ key='ra' and value='{v}' }}"
 
@@ -245,7 +267,7 @@ def run_job(drive: Drive, f: dict, worker: str, sync_args: list[str]) -> None:
                 f"Downloading {what} to your PC", lo + (hi - lo) * got / max(1, total)))
         if what == "ebook":
             check = subprocess.run(
-                [sys.executable, "-c", "import sys; sys.path.insert(0, 'tools'); import book_sync as b; "
+                [PYTHON, "-c", "import sys; sys.path.insert(0, 'tools'); import book_sync as b; "
                  "from pathlib import Path; b.load_book(Path(sys.argv[1]))", str(ebook)],
                 cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
             if check.returncode != 0:
@@ -255,7 +277,7 @@ def run_job(drive: Drive, f: dict, worker: str, sync_args: list[str]) -> None:
     # 2. Sync (10-95%): run book_sync.py and follow its log.
     job.report("Transcribing (starting WhisperX)", 10, force=True)
     out = work / "book"
-    cmd = [sys.executable, "-u", str(ROOT / "tools" / "book_sync.py"), str(audio), "--book", str(ebook),
+    cmd = [PYTHON, "-u", str(ROOT / "tools" / "book_sync.py"), str(audio), "--book", str(ebook),
            "--out", str(out), "--cache-dir", str(work / "cache")]
     if spec.get("language"):
         cmd += ["--language", spec["language"]]
@@ -331,10 +353,14 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--sync-args", default="", help='extra book_sync.py options, e.g. "--model medium"')
     args = ap.parse_args(argv)
 
+    global PYTHON
+    PYTHON = sync_python()   # check before signing in, so a missing WhisperX shows up at once
     drive = Drive(args.config)
     drive.setup()
     worker = socket.gethostname()
     sync_args = args.sync_args.split()
+    if PYTHON != sys.executable:
+        log(f"using {PYTHON} for syncing (it has WhisperX).")
     log(f"sync helper on {worker} is watching your Google Drive for books to sync. Ctrl+C to stop.")
     while True:
         try:

@@ -85,7 +85,7 @@ Turning an audiobook + ebook into a sync file needs WhisperX on a PC with a GPU,
    python tools/sync_worker.py
    ```
 
-   The first time, it asks for the same **client ID and secret** as step 3 above (the secret is typed hidden), then shows a code to enter at google.com/device. These are saved in `~/.readalong/worker.json`, outside the repo.
+   It runs `book_sync.py` with the Python that has WhisperX: the one you start it with, or else the project's `.venv`. The first time, it asks for the same **client ID and secret** as step 3 above (the secret is typed hidden), then shows a code to enter at google.com/device. These are saved in `~/.readalong/worker.json`, outside the repo.
 3. Leave it running. It checks your Drive every 20 seconds, and the website shows "Your PC's sync helper is running". For each job it downloads the files, checks the ebook can be read, runs `book_sync.py`, and adds the finished book to your library. The audiobook isn't uploaded again; only the small sync file is.
 
 Notes:
