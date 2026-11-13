@@ -161,7 +161,13 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
     }
     if (Cloud.enabled && Cloud.signedIn()) {
       try {
-        for (const b of await Cloud.listBooks()) { b.offline = await Cloud.isDownloaded(b); books.push(b); }
+        const listed = await Cloud.listBooks();
+        for (const b of listed) { b.offline = await Cloud.isDownloaded(b); books.push(b); }
+        // Books removed on another device: free the space their downloads use here.
+        const still = new Set(listed.map((b) => b.id));
+        for (const old of store.get("readalong:drive-books") || []) {
+          if (!still.has(old.id)) await Cloud.removeDownload(old);
+        }
       } catch (e) {
         // Offline: still list Drive books seen before that are downloaded on this device.
         for (const b of store.get("readalong:drive-books") || []) {

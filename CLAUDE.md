@@ -11,6 +11,8 @@ Pipeline:
 2. `tools/add_to_library.py` copies audio + sync into `web/books/<id>/` and updates `web/library.json` (or the git-ignored `web/books/private/` + `web/library.private.json` with `--private`).
 3. `web/index.html` (desktop/phone) and `web/glasses.html` (glasses) read the library and play books. No build step, no framework.
 4. Optional Google Drive (`web/cloud.js`, shared by both pages; setup in `docs/google-drive.md`): users add their own books (audio + sync.json) to a "Read-along" Drive folder from the web app, and reading positions sync across devices via `progress.json` there. Sign-in is Google's device-code flow (code entered at google.com/device), which works on the glasses' D-pad. Scope is `drive.file` only. Opened Drive books are cached in Cache Storage for offline play; `web/sw.js` caches the app shell. `web/cloud-config.js` stays empty in git; the Pages workflow fills it from the `GOOGLE_CLIENT_ID` variable and `GOOGLE_CLIENT_SECRET` secret.
+5. Sync jobs: in index.html, picking audio + ebook (EPUB/PDF/TXT) uploads both and creates a job file (appProperties ra=job, status queued/working/done/error, stage, progress). `tools/sync_worker.py` (stdlib only; config + token in `~/.readalong/worker.json`, work files in `~/.readalong/jobs/<job id>`) polls Drive, checks the ebook loads, downloads the audio, runs book_sync.py and parses its "[file i/n chunk j/m]" log lines for progress, then creates the book entry pointing at the already-uploaded audio. Heartbeat: a ra=worker file's `seen` appProperty.
+6. Removing a Drive book (index.html "Remove", tap twice): `removeBook` trashes the sync file, audio, and any job pointing at it (plus that job's ebook), clears the position locally and in progress.json, and returns data for `restoreBook` (Undo). glasses.html deletes downloads of books no longer listed in Drive. Tested end to end against tests/mock_google.py with real WhisperX (Nov 2026).
 
 ## Commands
 
@@ -20,6 +22,7 @@ python tools/fetch_example.py [--device cpu]  # Gutenberg example: download, syn
 python tools/serve.py [--lan]                 # http://localhost:8000 and /glasses.html
 python -m unittest discover tests -v          # 15 tests, no GPU/WhisperX needed (ffmpeg needed for 1, pypdf for 5)
 python tests/mock_google.py                   # fake Google sign-in + Drive on :8765 for testing cloud.js (see docs/google-drive.md)
+python tools/sync_worker.py [--once]          # on the GPU PC: make sync files for books queued in the web app
 ```
 
 ## Status

@@ -246,15 +246,69 @@
     return s;
   }
 
+  async function patchMeta(id, meta) {
+    await api(`/drive/v3/files/${id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(meta),
+    });
+  }
+
+  // ---------------------------------------------------------------- sync jobs
+  //
+  // A job asks the sync helper on your PC (tools/sync_worker.py) to make the sync
+  // file: the page uploads the audiobook and ebook, then writes a small job file.
+  // The helper reports its progress in the job's appProperties (status, stage,
+  // progress) and, when it's done, adds the book to the library.
+
+  const WAITING = "Waiting for your PC";
+
+  /** Upload an audiobook + ebook and queue a sync job. onProgress gets 0..1 for the uploads. */
+  async function addBookForSync(audioFile, ebookFile, { title, author = "", language = "", onProgress, signal } = {}) {
+    const parent = await folder();
+    const total = audioFile.size + ebookFile.size || 1;
+    const audioId = await uploadLarge(
+      { name: audioFile.name, parents: [parent], mimeType: audioType(audioFile.name, audioFile.type), appProperties: { ra: "audio" } },
+      audioFile, (p) => onProgress && onProgress(p * audioFile.size / total), signal);
+    const ebookId = await uploadLarge(
+      { name: ebookFile.name, parents: [parent], appProperties: { ra: "ebook" } },
+      ebookFile, (p) => onProgress && onProgress((audioFile.size + p * ebookFile.size) / total), signal);
+    title = title || audioFile.name.replace(/\.[^.]+$/, "");
+    const job = { version: 1, audio: audioId, audioName: audioFile.name, ebook: ebookId, ebookName: ebookFile.name,
+                  title, author, language };
+    return createFile({
+      name: `sync job - ${title}.json`, parents: [parent], mimeType: "application/json",
+      appProperties: { ra: "job", status: "queued", progress: "0", stage: WAITING, title: clip(title, 110) },
+    }, new Blob([JSON.stringify(job)], { type: "application/json" }));
+  }
+
+  /** Jobs, newest first: { id, title, status: queued|working|done|error, stage, progress 0-100, error, book }. */
+  async function listJobs() {
+    const files = await findFiles(tagged("job"), "id,name,modifiedTime,appProperties");
+    return files.map((f) => {
+      const p = f.appProperties || {};
+      return { id: f.id, title: p.title || f.name, status: p.status || "queued", stage: p.stage || "",
+               progress: +p.progress || 0, error: p.error || "", book: p.book || "", updated: f.modifiedTime };
+    });
+  }
+
+  /** When the sync helper last checked in (Date), or null if it never has. */
+  async function workerSeen() {
+    const f = (await findFiles(tagged("worker"), "id,appProperties"))[0];
+    const seen = f && f.appProperties && +f.appProperties.seen;
+    return seen ? new Date(seen) : null;
+  }
+
+  const retryJob = (id) => patchMeta(id, { appProperties: { status: "queued", progress: "0", stage: WAITING, error: null } });
+  const removeJob = (id) => api(`/drive/v3/files/${id}`, { method: "DELETE" });
+
   // ---------------------------------------------------------------- books
 
   /** Upload an audiobook and its .sync.json to the Read-along folder. */
-  async function addBook(audioFile, syncFile, { author = "", onProgress, signal } = {}) {
+  async function addBook(audioFile, syncFile, { title: chosenTitle = "", author = "", onProgress, signal } = {}) {
     const syncText = await syncFile.text();
     let data;
     try { data = JSON.parse(syncText); } catch { throw new Error("That sync file isn’t valid JSON. Choose the .sync.json from book_sync.py."); }
     if (!Array.isArray(data.lines)) throw new Error("That JSON has no “lines”. Choose the .sync.json from book_sync.py.");
-    const title = data.title || syncFile.name.replace(/\.(sync\.)?json$/i, "");
+    const title = chosenTitle || data.title || syncFile.name.replace(/\.(sync\.)?json$/i, "");
     const parent = await folder();
     const audioId = await uploadLarge(
       { name: audioFile.name, parents: [parent], mimeType: audioType(audioFile.name, audioFile.type), appProperties: { ra: "audio" } },
@@ -319,6 +373,48 @@
       const c = await caches.open(BOOK_CACHE);
       return !!(await c.match(cacheKey(book.drive.audio)));
     } catch { return false; }
+  }
+
+  /**
+   * Remove a book from the library everywhere: its audio, sync file, ebook and sync job
+   * go to the Google Drive bin (restorable there for 30 days), and its saved position
+   * and this device's downloaded copy are dropped.
+   */
+  async function removeBook(book) {
+    const ids = new Set([book.drive.sync, book.drive.audio]);
+    try {
+      for (const j of await findFiles(`${tagged("job")} and appProperties has { key='book' and value='${book.drive.sync}' }`, "id")) {
+        ids.add(j.id);
+        try { const spec = await (await api(`/drive/v3/files/${j.id}?alt=media`)).json(); if (spec.ebook) ids.add(spec.ebook); } catch {}
+      }
+    } catch {}
+    for (const id of ids) {
+      if (!id) continue;
+      try { await patchMeta(id, { trashed: true }); }
+      catch (e) { if (id === book.drive.sync) throw e; }   // the sync file decides whether the book is listed
+    }
+    await removeDownload(book);
+    let position = null;
+    try {
+      await chain;                                        // don't race a pending position save
+      const d = await readProgress();
+      if (d.books[book.id]) {
+        position = d.books[book.id];
+        delete d.books[book.id];
+        await updateFile(await progressFile(), new Blob([JSON.stringify(d)], { type: "application/json" }));
+      }
+    } catch {}
+    pending.delete(book.id);
+    const local = ls.get("readalong:" + book.id);
+    ls.del("readalong:" + book.id);
+    return { key: book.id, ids: [...ids], position, local };   // for restoreBook (Undo)
+  }
+
+  /** Undo removeBook: take the files out of the bin and put the saved position back. */
+  async function restoreBook(undo) {
+    for (const id of undo.ids) await patchMeta(id, { trashed: false });
+    if (undo.local) ls.set("readalong:" + undo.key, undo.local);
+    if (undo.position) await savePosition(undo.key, undo.position, true);
   }
 
   async function removeDownload(book) {
@@ -397,7 +493,8 @@
     enabled: !!CFG.clientId,
     audioType,
     signedIn, startSignIn, signOut,
-    listBooks, addBook, getBook, isDownloaded, removeDownload,
+    listBooks, addBook, getBook, isDownloaded, removeDownload, removeBook, restoreBook,
+    addBookForSync, listJobs, workerSeen, retryJob, removeJob,
     getPosition, savePosition,
   };
 })();

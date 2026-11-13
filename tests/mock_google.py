@@ -46,7 +46,7 @@ def make(meta: dict, data: bytes = b"") -> dict:
     fid = new_id()
     f = {"id": fid, "name": meta.get("name", "untitled"), "mimeType": meta.get("mimeType", "application/octet-stream"),
          "appProperties": meta.get("appProperties", {}), "parents": meta.get("parents", []),
-         "size": str(len(data)), "modifiedTime": time.time(), "_data": data}
+         "size": str(len(data)), "createdTime": time.time(), "modifiedTime": time.time(), "_data": data}
     FILES[fid] = f
     return f
 
@@ -160,10 +160,33 @@ class H(BaseHTTPRequestHandler):
         hdr = {"Range": f"bytes=0-{len(s['data']) - 1}"} if s["data"] else {}
         return self.reply(308, b"", headers=hdr)
 
+    def do_DELETE(self):
+        u = urlparse(self.path)
+        if not self.authed():
+            return
+        m = re.match(r"/drive/v3/files/(\w+)$", u.path)
+        if not m or FILES.pop(m.group(1), None) is None:
+            return self.reply(404, {"error": "not found"})
+        return self.reply(204, b"")
+
     def do_PATCH(self):
         u = urlparse(self.path)
         if not self.authed():
             return
+        m = re.match(r"/drive/v3/files/(\w+)$", u.path)
+        if m:                                        # metadata update; null appProperties are removed
+            f = FILES.get(m.group(1))
+            if not f:
+                return self.reply(404, {"error": "not found"})
+            meta = json.loads(self.body() or b"{}")
+            for k, v in (meta.pop("appProperties", None) or {}).items():
+                if v is None:
+                    f["appProperties"].pop(k, None)
+                else:
+                    f["appProperties"][k] = str(v)
+            f.update({k: v for k, v in meta.items() if k in ("name", "trashed")})
+            f["modifiedTime"] = time.time()
+            return self.reply(200, public(f))
         m = re.match(r"/upload/drive/v3/files/(\w+)$", u.path)
         if not m or m.group(1) not in FILES:
             return self.reply(404, {"error": "not found"})
@@ -180,7 +203,7 @@ class H(BaseHTTPRequestHandler):
             return
         if u.path == "/drive/v3/files":
             q = qs.get("q", [""])[0]
-            out = [f for f in FILES.values()]
+            out = [f for f in FILES.values() if not ("trashed=false" in q and f.get("trashed"))]
             for key, val in re.findall(r"key='(\w+)' and value='(\w+)'", q):
                 out = [f for f in out if f["appProperties"].get(key) == val]
             mt = re.search(r"mimeType='([^']+)'", q)

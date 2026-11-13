@@ -123,7 +123,11 @@ button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-c
 #libBox { margin-top: 1.6rem; border-top: 1px solid var(--line); padding-top: 1.2rem; }
 #libBox h3 { font-size: 1rem; margin: 0 0 0.7rem; color: var(--muted); font-weight: 400; }
 #libList { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+#libList li { display: flex; gap: 0.4rem; align-items: stretch; }
 #libList button { width: 100%; text-align: left; border-radius: 12px; padding: 0.7rem 0.9rem; }
+#libList button.rm { width: auto; flex: none; text-align: center; font-size: 0.85rem; color: var(--muted); padding: 0.5rem 0.8rem; }
+#libList button.rm.armed { color: var(--bg); background: #c0392b; border-color: #c0392b; }
+#status .linkish { border: none; padding: 0 0.2rem; text-decoration: underline; color: inherit; }
 #libList .t { font-family: var(--read); font-weight: 600; display: block; }
 #libList .a { color: var(--muted); font-size: 0.9rem; }
 #libList .tag { color: var(--muted); font-size: 0.8rem; margin-left: 0.4rem; }
@@ -133,6 +137,25 @@ button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-c
 #driveBox .code { font: 700 1.6rem/1.2 var(--ui); letter-spacing: 0.08em; color: var(--ink); display: block; margin: 0.4rem 0; }
 #driveBox a { color: var(--lamp); }
 #driveBox .linkish { border: none; padding: 0.55rem 0.4rem; color: var(--muted); text-decoration: underline; }
+#addForm { margin-top: 1rem; display: grid; gap: 0.6rem; }
+#addForm label { display: grid; gap: 0.25rem; font-size: 0.9rem; color: var(--muted); }
+#addForm input, #addForm select { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 0.45rem 0.6rem; max-width: none; }
+#addForm .files { margin: 0; font-size: 0.9rem; color: var(--ink); }
+progress { width: 100%; height: 10px; accent-color: var(--lamp); }
+#upload { margin-top: 1rem; }
+.meter-row { display: flex; justify-content: space-between; gap: 1rem; font-size: 0.9rem; margin-bottom: 0.3rem; }
+.meter-row span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#jobsBox { margin-top: 1.2rem; }
+#jobList { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; }
+#jobList li { border: 1px solid var(--line); border-radius: 12px; padding: 0.7rem 0.9rem; }
+#jobList .jt { font-family: var(--read); font-weight: 600; }
+#jobList .js { font-size: 0.9rem; color: var(--muted); margin: 0.2rem 0 0.4rem; }
+#jobList .js.error { color: #c0392b; }
+#jobList .ja { display: flex; gap: 0.4rem; margin-top: 0.4rem; }
+#jobList .ja button { padding: 0.25rem 0.7rem; font-size: 0.85rem; }
+#workerNote { font-size: 0.9rem; color: var(--muted); }
+#workerNote code { background: var(--surface); padding: 0.1rem 0.35rem; border-radius: 4px; }
+@media (prefers-color-scheme: dark) { #jobList .js.error { color: #ff8a7a; } }
 .status { margin-top: 1rem; font-size: 0.95rem; color: var(--muted); min-height: 1.4em; }
 .status.error { color: #c0392b; }
 @media (prefers-color-scheme: dark) { .status.error { color: #ff8a7a; } }
@@ -272,6 +295,31 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
     <div id="driveBox" hidden>
       <h3>Your books in Google Drive</h3>
       <div id="driveBody"></div>
+      <form id="addForm" hidden>
+        <p class="files" id="addFiles"></p>
+        <label>Title<input id="addTitle" required autocomplete="off"></label>
+        <label>Author (optional)<input id="addAuthor" autocomplete="off"></label>
+        <label id="addLangRow">Language of the narration
+          <select id="addLang">
+            <option value="en" selected>English</option><option value="">Detect automatically</option>
+            <option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option>
+            <option value="it">Italian</option><option value="pt">Portuguese</option><option value="nl">Dutch</option>
+            <option value="sv">Swedish</option><option value="pl">Polish</option><option value="ru">Russian</option>
+            <option value="ja">Japanese</option><option value="zh">Chinese</option>
+          </select>
+        </label>
+        <div class="picks"><button type="submit" id="addGo">Upload</button><button type="button" class="linkish" id="addCancel">Cancel</button></div>
+      </form>
+      <div id="upload" hidden>
+        <div class="meter-row"><span id="upLabel"></span><span id="upPct"></span></div>
+        <progress id="upBar" max="100" value="0"></progress>
+        <div class="picks"><button class="linkish" id="upCancel">Cancel upload</button></div>
+      </div>
+      <div id="jobsBox" hidden>
+        <h3>Making sync files</h3>
+        <p id="workerNote"></p>
+        <ul id="jobList"></ul>
+      </div>
     </div>
   </div>
 </main>
@@ -468,10 +516,51 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
     $("libList").innerHTML = books.map((b, i) =>
       `<li><button data-i="${i}"><span class="t">${esc(b.title)}` +
       (b.drive ? `<span class="tag">Google Drive${b.offline ? " · on this device" : ""}</span>` : "") +
-      `</span>${b.author ? `<span class="a">${esc(b.author)}</span>` : ""}</button></li>`).join("");
+      `</span>${b.author ? `<span class="a">${esc(b.author)}</span>` : ""}</button>` +
+      (b.drive ? `<button class="rm" data-rm="${i}" aria-label="Remove ${esc(b.title)} from your library">Remove</button>` : "") +
+      `</li>`).join("");
   }
+
+  // Remove (Drive books): tap once to arm, again within 4 s to remove; then Undo for 10 s.
+  let armed = null, undoTimer = 0;
+  async function removeFromLibrary(btn, b) {
+    if (armed !== btn) {
+      if (armed) { armed.textContent = "Remove"; armed.classList.remove("armed"); }
+      armed = btn;
+      btn.textContent = "Remove?";
+      btn.classList.add("armed");
+      setTimeout(() => { if (armed === btn) { btn.textContent = "Remove"; btn.classList.remove("armed"); armed = null; } }, 4000);
+      return;
+    }
+    armed = null;
+    btn.disabled = true;
+    btn.textContent = "Removing…";
+    try {
+      const undo = await Cloud.removeBook(b);
+      await loadLibrary();
+      refreshJobs();
+      clearTimeout(undoTimer);
+      $("status").classList.remove("error");
+      $("status").innerHTML = `Removed “${esc(b.title)}” from your library. <button class="linkish" id="undoRemove">Undo</button>`;
+      $("undoRemove").onclick = async () => {
+        $("status").textContent = "Restoring…";
+        try { await Cloud.restoreBook(undo); setStatus(`“${b.title}” is back in your library.`); }
+        catch (e) { setStatus("Couldn’t restore it: " + e.message + ". It’s in your Google Drive bin.", true); }
+        loadLibrary();
+        refreshJobs();
+      };
+      undoTimer = setTimeout(() => { if ($("undoRemove")) setStatus(""); }, 10000);
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = "Remove";
+      btn.classList.remove("armed");
+      setStatus("Couldn’t remove it: " + e.message, true);
+    }
+  }
+
   $("libList").onclick = (e) => {
     const btn = e.target.closest("button"); if (!btn) return;
+    if (btn.dataset.rm) return removeFromLibrary(btn, library[+btn.dataset.rm]);
     const b = library[+btn.dataset.i];
     if (b.drive) return openDriveBook(b);
     state.bookId = b.id;
@@ -521,13 +610,14 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
         <div class="picks"><button id="driveConnect">Connect Google Drive</button></div>${extra || ""}`;
       $("driveConnect").onclick = connectDrive;
     } else {
-      body.innerHTML = `<p>Connected. Add a book by choosing its audio file and its .sync.json together.</p>
+      body.innerHTML = `<p>Connected. To add a book, choose the audiobook (e.g. .m4b) and its ebook (EPUB, PDF or TXT) together. Your PC makes the sync file, then the book appears everywhere. Already have a .sync.json? Choose that instead of the ebook.</p>
         <div class="picks">
-          <label>Add a book to Drive<input type="file" id="driveAdd" multiple accept="audio/*,.m4b,.m4a,.mp3,.ogg,.opus,.flac,.wav,.json,application/json"></label>
+          <label>Add a book to Drive<input type="file" id="driveAdd" multiple accept="audio/*,.m4b,.m4a,.mp3,.ogg,.opus,.flac,.wav,.aac,.json,application/json,.epub,.pdf,.txt"></label>
           <button class="linkish" id="driveOut">Disconnect</button>
         </div>${extra || ""}`;
-      $("driveAdd").onchange = (e) => addToDrive([...e.target.files]);
-      $("driveOut").onclick = () => { Cloud.signOut(); renderDrive(); loadLibrary(); };
+      $("driveAdd").onchange = (e) => { pickForDrive([...e.target.files]); e.target.value = ""; };
+      $("driveOut").onclick = () => { Cloud.signOut(); $("jobsBox").hidden = true; renderDrive(); loadLibrary(); };
+      refreshJobs();
     }
   }
 
@@ -544,24 +634,117 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
     }
   }
 
-  async function addToDrive(files) {
+  // ----- adding a book: pick files -> form -> upload with progress -----
+  let picked = null;
+  const sizeText = (n) => n > 1e9 ? (n / 1e9).toFixed(1) + " GB" : Math.max(1, Math.round(n / 1e6)) + " MB";
+  const niceName = (name) => name.replace(/\.[^.]+$/, "").replace(/\.sync$/i, "").replace(/[_-]+/g, " ").trim();
+
+  async function pickForDrive(files) {
     const audioF = files.find((f) => /^audio\//.test(f.type) || /\.(m4b|m4a|mp3|ogg|opus|flac|wav|aac)$/i.test(f.name));
     const syncF = files.find((f) => /\.json$/i.test(f.name));
-    if (!audioF || !syncF) return setStatus("Choose both files at once: the audiobook and its .sync.json.", true);
-    if (busy) return;
-    busy = true;
-    try {
-      setStatus(`Uploading ${audioF.name}…`);
-      await Cloud.addBook(audioF, syncF, {
-        onProgress: (p) => setStatus(`Uploading ${audioF.name}: ${Math.round(p * 100)}%`),
-      });
-      setStatus("Added to your Google Drive. It’s in the library now, here and on your other devices.");
-      loadLibrary();
-    } catch (e) {
-      setStatus("Upload failed: " + e.message, true);
-      if (e.signedOut) renderDrive();
-    } finally { busy = false; }
+    const ebookF = files.find((f) => /\.(epub|pdf|txt)$/i.test(f.name));
+    if (!audioF || !(syncF || ebookF)) {
+      return setStatus("Choose two files at once: the audiobook, plus its ebook (EPUB, PDF or TXT) or its .sync.json.", true);
+    }
+    setStatus("");
+    picked = { audio: audioF, sync: syncF || null, ebook: syncF ? null : ebookF };
+    let title = niceName(audioF.name);
+    if (syncF) { try { title = JSON.parse(await syncF.text()).title || title; } catch {} }
+    else title = niceName(ebookF.name) || title;
+    const other = picked.sync || picked.ebook;
+    $("addFiles").textContent = `${audioF.name} (${sizeText(audioF.size)}) + ${other.name}`;
+    $("addTitle").value = title;
+    $("addAuthor").value = "";
+    $("addLangRow").hidden = !picked.ebook;
+    $("addGo").textContent = picked.ebook ? "Upload and make the sync file" : "Upload";
+    $("addForm").hidden = false;
+    $("addTitle").focus();
   }
+  $("addCancel").onclick = () => { picked = null; $("addForm").hidden = true; };
+
+  let uploadCtl = null;
+  $("addForm").onsubmit = async (e) => {
+    e.preventDefault();
+    if (!picked || busy) return;
+    const p = picked, title = $("addTitle").value.trim(), author = $("addAuthor").value.trim(), language = $("addLang").value;
+    picked = null;
+    $("addForm").hidden = true;
+    busy = true;
+    uploadCtl = new AbortController();
+    const total = p.audio.size + (p.ebook || p.sync).size;
+    const show = (frac) => {
+      $("upBar").value = Math.round(frac * 1000) / 10;
+      $("upPct").textContent = `${Math.floor(frac * 100)}%`;
+      $("upLabel").textContent = `Uploading ${title}: ${sizeText(frac * total)} of ${sizeText(total)}`;
+    };
+    show(0);
+    $("upload").hidden = false;
+    try {
+      const opts = { title, author, language, onProgress: show, signal: uploadCtl.signal };
+      if (p.ebook) {
+        await Cloud.addBookForSync(p.audio, p.ebook, opts);
+        setStatus("Uploaded. Your PC is making the sync file; the book appears in the library when it’s done.");
+        refreshJobs();
+      } else {
+        await Cloud.addBook(p.audio, p.sync, opts);
+        setStatus("Added to your Google Drive. It’s in the library now, here and on your other devices.");
+        loadLibrary();
+      }
+    } catch (err) {
+      setStatus(err.name === "AbortError" ? "Upload cancelled." : "Upload failed: " + err.message, err.name !== "AbortError");
+      if (err.signedOut) renderDrive();
+    } finally {
+      busy = false;
+      uploadCtl = null;
+      $("upload").hidden = true;
+    }
+  };
+  $("upCancel").onclick = () => uploadCtl && uploadCtl.abort();
+  addEventListener("beforeunload", (e) => { if (uploadCtl) { e.preventDefault(); e.returnValue = ""; } });
+
+  // ----- sync jobs: progress reported by tools/sync_worker.py on your PC -----
+  let jobTimer = 0, lastDone = new Set();
+  async function refreshJobs() {
+    clearTimeout(jobTimer);
+    if (!Cloud.enabled || !Cloud.signedIn()) return;
+    let jobs, seen;
+    try { [jobs, seen] = await Promise.all([Cloud.listJobs(), Cloud.workerSeen()]); }
+    catch (e) { jobTimer = setTimeout(refreshJobs, 30000); return; }
+    $("jobsBox").hidden = !jobs.length;
+    const active = jobs.some((j) => j.status === "queued" || j.status === "working");
+    const online = seen && Date.now() - seen.getTime() < 3 * 60 * 1000;
+    $("workerNote").innerHTML = online
+      ? "Your PC’s sync helper is running."
+      : active
+        ? "Waiting for your PC. On the PC with the GPU, run <code>python tools/sync_worker.py</code> in the readalong folder. It picks up this job and keeps going even if you close this page."
+        : "";
+    $("jobList").innerHTML = jobs.map((j) => {
+      const pct = Math.round(j.progress);
+      const line = j.status === "error" ? `Failed: ${esc(j.error || "unknown error")}`
+        : j.status === "done" ? "Ready in your library"
+        : j.status === "working" ? `${esc(j.stage)} · ${pct}%`
+        : esc(j.stage || "Waiting for your PC");
+      const bar = j.status === "working" ? `<progress max="100" value="${pct}"></progress>` : "";
+      const acts = (j.status === "error" ? `<button data-retry="${j.id}">Try again</button>` : "") +
+        (j.status !== "working" ? `<button data-remove="${j.id}">${j.status === "done" ? "Clear" : "Remove"}</button>` : "");
+      return `<li><div class="jt">${esc(j.title)}</div><div class="js${j.status === "error" ? " error" : ""}">${line}</div>${bar}` +
+        (acts ? `<div class="ja">${acts}</div>` : "") + `</li>`;
+    }).join("");
+    const done = new Set(jobs.filter((j) => j.status === "done").map((j) => j.id));
+    if ([...done].some((id) => !lastDone.has(id))) loadLibrary();
+    lastDone = done;
+    jobTimer = setTimeout(refreshJobs, active ? (document.hidden ? 60000 : 8000) : 60000);
+  }
+  $("jobList").onclick = async (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    b.disabled = true;
+    try {
+      if (b.dataset.retry) await Cloud.retryJob(b.dataset.retry);
+      if (b.dataset.remove) await Cloud.removeJob(b.dataset.remove);
+    } catch (err) { setStatus(err.message, true); }
+    refreshJobs();
+  };
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshJobs(); });
   renderDrive();
 
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
