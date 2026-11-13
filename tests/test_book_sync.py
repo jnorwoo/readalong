@@ -143,6 +143,142 @@ class TestEbook(unittest.TestCase):
         self.assertEqual(bs.norm_word("—"), "")
 
 
+try:
+    import pypdf  # noqa: F401
+    HAVE_PYPDF = True
+except ImportError:
+    HAVE_PYPDF = False
+
+
+def make_pdf(path: Path, pages: list, title: str = "The Test Book", outline=None) -> None:
+    """Write a simple text PDF (Helvetica, one text line per entry) without extra libraries."""
+    def esc(s):
+        return s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    objs = {1: "<< /Type /Catalog /Pages 2 0 R >>",
+            3: "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"}
+    kids = []
+    for n, lines in enumerate(pages):
+        pid, cid = 4 + 2 * n, 5 + 2 * n
+        kids.append(f"{pid} 0 R")
+        stream = "\n".join(["BT /F1 11 Tf 14 TL 72 760 Td"] + [f"({esc(l)}) Tj T*" for l in lines] + ["ET"])
+        objs[pid] = ("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                     f"/Resources << /Font << /F1 3 0 R >> >> /Contents {cid} 0 R >>")
+        objs[cid] = f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream"
+    objs[2] = f"<< /Type /Pages /Kids [{' '.join(kids)}] /Count {len(pages)} >>"
+    info = max(objs) + 1
+    objs[info] = f"<< /Title ({esc(title)}) >>"
+    out, offs = bytearray(b"%PDF-1.4\n"), {}
+    for i in sorted(objs):
+        offs[i] = len(out)
+        out += f"{i} 0 obj\n{objs[i]}\nendobj\n".encode("latin-1")
+    xref = len(out)
+    out += f"xref\n0 {info + 1}\n0000000000 65535 f \n".encode()
+    out += b"".join(f"{offs[i]:010d} 00000 n \n".encode() for i in range(1, info + 1))
+    out += f"trailer\n<< /Size {info + 1} /Root 1 0 R /Info {info} 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    path.write_bytes(bytes(out))
+    if outline:
+        w = pypdf.PdfWriter(clone_from=str(path))
+        for name, page in outline:
+            w.add_outline_item(name, page)
+        w.write(str(path))
+
+
+def pdf_pages(chapters, header=lambda ch: "THE TEST BOOK", per_page=40, chapter_lines=True, hyphen=True):
+    """Lay out chapters (lists of paragraphs) as printed pages: header, wrapped text, page number."""
+    import textwrap
+    pages, page_no = [], 0
+    for c, paras in enumerate(chapters):
+        body = [f"Chapter {c + 1}", ""] if chapter_lines else []
+        for p in paras:
+            body += textwrap.wrap(p, 70)
+        if hyphen and c == 0:                     # split a word across two lines with a hyphen
+            body[3] = body[3] + " won-"
+            body[4] = "derful " + body[4]
+        for i in range(0, len(body), per_page):   # each chapter starts on a new page
+            page_no += 1
+            pages.append([header(c + 1), ""] + body[i:i + per_page] + ["", str(page_no)])
+    return pages
+
+
+def ascii_paras(n, seed):
+    rnd = random.Random(seed)
+    out = []
+    for _ in range(n):
+        ws = [rnd.choice(VOCAB) for _ in range(rnd.randint(25, 70))]
+        ws[0] = ws[0].capitalize()
+        out.append(" ".join(ws) + ".")
+    return out
+
+
+@unittest.skipUnless(HAVE_PYPDF, "pypdf not installed")
+class TestPDF(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def words(self, book):
+        return [t.text for t in book.tokens]
+
+    def test_headers_page_numbers_hyphens_and_chapter_lines(self):
+        p = self.tmp / "b.pdf"
+        make_pdf(p, pdf_pages([ascii_paras(30, 1), ascii_paras(30, 2)]))
+        book = bs.load_book(p)
+        words = self.words(book)
+        self.assertEqual(book.title, "The Test Book")
+        self.assertEqual(book.chapters, ["Chapter 1", "Chapter 2"])
+        self.assertNotIn("TEST", words, "running header removed")
+        self.assertEqual([w for w in words if w.isdigit()], ["1", "2"], "page numbers removed (chapter numbers stay)")
+        self.assertIn("wonderful", words, "hyphenated word rejoined")
+        self.assertNotIn("won-", words)
+        expected = sum(len(p.split()) for p in ascii_paras(30, 1) + ascii_paras(30, 2))
+        self.assertEqual(len(words), expected + 4 + 1, "every body word kept (+4 for 'Chapter N' x2, +1 joined word)")
+
+    def test_chapters_from_bookmarks(self):
+        p = self.tmp / "b.pdf"
+        pages = pdf_pages([ascii_paras(25, 3), ascii_paras(25, 4)], chapter_lines=False, hyphen=False)
+        second = next(i for i, pg in enumerate(pages) if i > 0 and pg[2].startswith(ascii_paras(25, 4)[0][:20]))
+        make_pdf(p, pages, outline=[("Part One", 0), ("Part Two", second)])
+        self.assertEqual(bs.load_book(p).chapters, ["Part One", "Part Two"])
+
+    def test_chapters_from_running_headers(self):
+        # No chapter lines in the text or bookmarks; "Chapter N" only atop each page.
+        p = self.tmp / "b.pdf"
+        make_pdf(p, pdf_pages([ascii_paras(40, 5), ascii_paras(40, 6)], header=lambda ch: f"Chapter {ch}",
+                              chapter_lines=False, hyphen=False))
+        book = bs.load_book(p)
+        self.assertEqual(book.chapters, ["Chapter 1", "Chapter 2"])
+        self.assertNotIn("Chapter", self.words(book))
+
+    def test_scanned_and_protected_pdfs_explain_themselves(self):
+        scanned = self.tmp / "scan.pdf"
+        make_pdf(scanned, [[] for _ in range(5)])            # pages with no text, like page images
+        with self.assertRaises(SystemExit) as cm:
+            bs.load_book(scanned)
+        self.assertIn("scanned", str(cm.exception.code))
+
+        locked = self.tmp / "locked.pdf"
+        make_pdf(locked, pdf_pages([ascii_paras(5, 1)]))
+        w = pypdf.PdfWriter(clone_from=str(locked))
+        w.encrypt(user_password="secret", algorithm="RC4-128")
+        w.write(str(locked))
+        with self.assertRaises(SystemExit) as cm:
+            bs.load_book(locked)
+        self.assertIn("protected", str(cm.exception.code))
+
+    def test_alignment_on_pdf(self):
+        p = self.tmp / "b.pdf"
+        make_pdf(p, pdf_pages([ascii_paras(60, s) for s in range(7, 11)]))
+        book = bs.load_book(p)
+        words, truth = fake_narration(book)
+        bs.align(book, words)
+        bs.interpolate(book)
+        errs = [abs(book.tokens[i].start - truth[i]) for i in truth if book.tokens[i].start is not None]
+        self.assertGreater(len(errs) / len(truth), 0.9)
+        self.assertLess(sum(errs) / len(errs), 0.1)
+
+
 class TestAlignment(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

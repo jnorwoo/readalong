@@ -10,7 +10,7 @@ Comes with a public-domain example from Project Gutenberg: *The Gift of the Magi
 
 | Path | What it does |
 |---|---|
-| `tools/book_sync.py` | Makes the timing file from an audiobook + ebook (EPUB or TXT) |
+| `tools/book_sync.py` | Makes the timing file from an audiobook + ebook (EPUB, PDF or TXT) |
 | `tools/fetch_example.py` | Downloads the Gutenberg example and syncs it, in one step |
 | `tools/add_to_library.py` | Adds a synced book to the web apps' library |
 | `tools/serve.py` | Runs the web apps locally (with the audio seeking support browsers need) |
@@ -36,7 +36,9 @@ On a computer without an NVIDIA GPU, add `--device cpu` to `fetch_example.py` (i
 
 ## Your own books
 
-Only DRM-free files work: EPUB or TXT ebooks, and MP3, M4A, M4B and similar audio. Audible `.aax` files and DRM-protected Kindle books can't be used.
+Only DRM-free files work: EPUB, PDF or TXT ebooks, and MP3, M4A, M4B and similar audio. Audible `.aax` files, DRM-protected Kindle/Apple books and password-protected PDFs can't be used.
+
+EPUB gives the best results. PDFs work if they contain real text (not scanned page images): page headers, footers and page numbers are removed and words hyphenated across lines are rejoined. Chapters come from the PDF's bookmarks if it has them, otherwise from "Chapter ..." lines. LibriVox (librivox.org) has free M4B/MP3 recordings of public-domain books, and its pages link the matching Project Gutenberg text.
 
 ```bash
 python tools/book_sync.py "My Book.m4b" --book "My Book.epub" --language en

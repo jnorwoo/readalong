@@ -25,6 +25,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pip install pypdf
       - run: python -m unittest discover tests -v
 
   deploy:

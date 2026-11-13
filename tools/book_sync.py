@@ -14,7 +14,8 @@ Usage:
   python book_sync.py "Book.m4b" --book "Book.epub"
   python book_sync.py part1.mp3 part2.mp3 part3.mp3 --book Book.epub --language en
 
-Works only with DRM-free files you own (EPUB/TXT and MP3/M4A/M4B/etc).
+Works only with DRM-free files you own (EPUB/PDF/TXT and MP3/M4A/M4B/etc).
+PDFs need `pip install pypdf` and must contain text (not scanned page images).
 Requires ffmpeg on your PATH and `pip install whisperx`.
 """
 
@@ -223,6 +224,152 @@ def load_text(path: Path) -> tuple[str, list[tuple[str | None, list[str]]]]:
     return path.stem, [d for d in docs if d[1]]
 
 
+# A page number alone on a line: "12", "- 12 -", "Page 12", "12 of 300", or lowercase
+# roman numerals (front matter). Uppercase "I", "II" are left alone: they're chapter numbers.
+PAGE_NUMBER = re.compile(r"^[\s\-–—]*(page\s+)?(\d+|[ivxlc]+)(\s*(of|/)\s*\d+)?[\s\-–—]*$", re.I)
+ROMAN_UPPER = re.compile(r"^[IVXLC]+$")
+
+
+def _is_page_number(line: str) -> bool:
+    s = line.strip()
+    return bool(PAGE_NUMBER.match(s)) and not ROMAN_UPPER.match(s)
+
+
+def _pdf_paragraphs(lines: list[str]) -> list[str]:
+    """Join a PDF's lines into paragraphs.
+
+    PDFs have no paragraph markup, only lines. A line that ends well short of the
+    usual line width ends a paragraph (that's how printed paragraphs look); blank
+    lines also end one. Words split with a hyphen at a line end are rejoined.
+    """
+    widths = sorted(len(l.strip()) for l in lines if l.strip())
+    if not widths:
+        return []
+    full = widths[int(len(widths) * 0.75)]          # typical width of a full line
+    paras: list[str] = []
+    cur = ""
+    for raw in lines:
+        line = " ".join(raw.split())
+        if not line:
+            if cur:
+                paras.append(cur)
+            cur = ""
+            continue
+        if cur and re.search(r"[A-Za-z]-$", cur) and line[:1].islower():
+            cur = cur[:-1] + line                    # "won-" + "derful" -> "wonderful"
+        else:
+            cur = f"{cur} {line}" if cur else line
+        # A short line ends the paragraph if it ends like a sentence, or is very short
+        # (a heading). Capitals are wide, so an all-caps line can be "short" in
+        # characters while still running on.
+        ends_sentence = re.search(r"[.!?:;…”\"’')\]]$", line)
+        if (len(line) < 0.75 * full and ends_sentence) or len(line) < 0.5 * full:
+            paras.append(cur)
+            cur = ""
+    if cur:
+        paras.append(cur)
+    return paras
+
+
+def load_pdf(path: Path) -> tuple[str, list[tuple[str | None, list[str]]]]:
+    """Return (title, [(heading, paragraphs) per chapter]) from a text PDF.
+
+    Removes running headers/footers and page numbers, rejoins hyphenated words,
+    and splits chapters by the PDF's bookmarks (outline) if it has them, otherwise
+    by "Chapter ..." lines. Scanned PDFs (images of pages) have no text to read.
+    """
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        sys.exit("error: reading PDFs needs pypdf. Run: pip install pypdf")
+    try:
+        reader = PdfReader(str(path))
+        if reader.is_encrypted and not reader.decrypt(""):
+            sys.exit("error: this PDF is password-protected or DRM-protected. Use an unprotected copy.")
+        pages = [unicodedata.normalize("NFKC", page.extract_text() or "").replace("­", "").splitlines()
+                 for page in reader.pages]
+    except SystemExit:
+        raise
+    except Exception as e:  # pypdf raises many types for damaged or DRM-encrypted files
+        sys.exit(f"error: couldn't read this PDF ({e}). If it's DRM-protected, use an unprotected copy.")
+
+    if sum(len(" ".join(p).split()) for p in pages) < 2 * len(pages):
+        sys.exit("error: this PDF has almost no text. It's probably scanned pages (images); "
+                 "run it through OCR first, or use an EPUB or TXT edition.")
+
+    # Running headers/footers live at the top or bottom of pages and repeat:
+    # - the same text apart from numbers on many pages ("The Book   47"), or
+    # - the exact same short line on 3+ pages ("Chapter 3" atop each page of chapter 3).
+    from collections import Counter
+    def loose(line: str) -> str:
+        return re.sub(r"\d+", "#", " ".join(line.split()).lower())
+    def exact(line: str) -> str:
+        return " ".join(line.split())
+
+    loose_n, exact_n = Counter(), Counter()
+    for lines in pages:
+        body = [l for l in lines if l.strip()]
+        ends = body[:2] + body[-2:]
+        loose_n.update({loose(l) for l in ends})
+        exact_n.update({exact(l) for l in ends if len(exact(l)) <= 60})
+    many = max(3, int(0.3 * len(pages)))
+
+    def running(line: str) -> bool:
+        return len(pages) >= 4 and (loose_n[loose(line)] >= many or exact_n[exact(line)] >= 3)
+
+    cleaned: list[list[str]] = []
+    header_chapters: list[tuple[int, str]] = []       # chapter-style running headers, by page
+    for pno, lines in enumerate(pages):
+        idx = [i for i, l in enumerate(lines) if l.strip()]
+        edge = set(idx[:2] + idx[-2:])
+        keep = []
+        for i, l in enumerate(lines):
+            if i in edge and (_is_page_number(l) or running(l)):
+                if CHAPTER_LINE.match(l) and (not header_chapters or header_chapters[-1][1] != exact(l)):
+                    header_chapters.append((pno, exact(l)))
+                continue
+            keep.append(l)
+        cleaned.append(keep)
+
+    title = (reader.metadata.title if reader.metadata else None) or ""
+    title = re.sub(r"^Microsoft Word - ", "", title).strip()
+    if not title or re.search(r"\.(docx?|pdf|indd)$", title, re.I):
+        title = path.stem
+
+    # Chapters from the bookmarks (top level only), split at the page they point to.
+    starts: list[tuple[int, str]] = []
+    try:
+        for item in reader.outline:
+            if isinstance(item, list):
+                continue                              # nested sub-sections
+            page = reader.get_destination_page_number(item)
+            if page is not None and item.title and item.title.strip():
+                starts.append((page, " ".join(item.title.split())))
+    except Exception:
+        starts = []
+    starts = sorted({p: t for p, t in starts}.items())
+    in_text = sum(1 for p in _pdf_paragraphs([l for pg in cleaned for l in pg]) if CHAPTER_LINE.match(p))
+    if len(starts) < 2 and in_text < 2 and len(header_chapters) >= 2:
+        starts = header_chapters                      # chapters known only from running headers
+    if len(starts) >= 2:
+        docs: list[tuple[str | None, list[str]]] = []
+        bounds = [p for p, _ in starts] + [len(cleaned)]
+        if bounds[0] > 0:                             # pages before the first bookmark
+            docs.append((None, _pdf_paragraphs([l for pg in cleaned[:bounds[0]] for l in pg])))
+        for (page, name), end in zip(starts, bounds[1:]):
+            docs.append((name, _pdf_paragraphs([l for pg in cleaned[page:end] for l in pg])))
+        return title, [d for d in docs if d[1]]
+
+    # No bookmarks: split at "Chapter ..." lines, like plain text.
+    docs = [(None, [])]
+    for p in _pdf_paragraphs([l for pg in cleaned for l in pg]):
+        if CHAPTER_LINE.match(p):
+            docs.append((p, [p]))
+        else:
+            docs[-1][1].append(p)
+    return title, [d for d in docs if d[1]]
+
+
 PG_START = re.compile(r"\*\*\*\s*START OF (THE|THIS) PROJECT GUTENBERG", re.I)
 PG_END = re.compile(r"\*\*\*\s*END OF (THE|THIS) PROJECT GUTENBERG", re.I)
 
@@ -251,8 +398,10 @@ def load_book(path: Path) -> Book:
         title, docs = load_epub(path)
     elif ext in {".txt", ".md", ".text"}:
         title, docs = load_text(path)
+    elif ext == ".pdf":
+        title, docs = load_pdf(path)
     else:
-        sys.exit(f"error: unsupported book format '{ext}'. Use .epub or .txt "
+        sys.exit(f"error: unsupported book format '{ext}'. Use .epub, .pdf or .txt "
                  f"(convert other formats with Calibre first).")
 
     docs = strip_gutenberg(docs)
@@ -262,7 +411,14 @@ def load_book(path: Path) -> Book:
         # An untitled document continues the previous chapter (EPUBs often split
         # chapters into several files); only the first one gets a fallback name.
         if heading or not book.chapters:
-            book.chapters.append(heading or (paras[0] if len(paras[0].split()) <= 8 else "Section 1"))
+            # Fallback name: a short first line (often the title page) unless it's a
+            # byline, else the book's title from its metadata, else "Section 1".
+            first = paras[0]
+            if len(first.split()) <= 8 and not re.match(r"by\b", first, re.I):
+                fallback = first
+            else:
+                fallback = title if title != path.stem else "Section 1"
+            book.chapters.append(heading or fallback)
         ch_no = len(book.chapters) - 1
         for p in paras:
             for w in p.split():
@@ -562,7 +718,7 @@ def join_audio(files: list[Path], dest: Path) -> None:
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="Sync an ebook's text to its audiobook.")
     ap.add_argument("audio", nargs="+", type=Path, help="audiobook file(s), in reading order")
-    ap.add_argument("--book", required=True, type=Path, help="ebook (.epub or .txt)")
+    ap.add_argument("--book", required=True, type=Path, help="ebook (.epub, .pdf or .txt)")
     ap.add_argument("--out", type=Path, help="output path prefix (default: next to the book)")
     ap.add_argument("--model", help="Whisper model (default: large-v3 on GPU, small on CPU)")
     ap.add_argument("--language", help="language code, e.g. en (default: auto-detect)")

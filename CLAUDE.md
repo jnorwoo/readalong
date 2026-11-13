@@ -18,14 +18,16 @@ Pipeline:
 pip install -r requirements.txt               # whisperx (pulls in torch)
 python tools/fetch_example.py [--device cpu]  # Gutenberg example: download, sync, add to library
 python tools/serve.py [--lan]                 # http://localhost:8000 and /glasses.html
-python -m unittest discover tests -v          # 10 tests, no GPU/WhisperX needed (ffmpeg needed for 1)
+python -m unittest discover tests -v          # 15 tests, no GPU/WhisperX needed (ffmpeg needed for 1, pypdf for 5)
 python tests/mock_google.py                   # fake Google sign-in + Drive on :8765 for testing cloud.js (see docs/google-drive.md)
 ```
 
 ## Status
 
 Tested and working:
-- EPUB/TXT parsing, chapter detection, Project Gutenberg header/license stripping.
+- EPUB/TXT/PDF parsing, chapter detection, Project Gutenberg header/license stripping.
+- PDF (`load_pdf`, needs pypdf): removes running headers/footers (lines at page edges repeating on many pages ignoring digits, or the exact same short line on 3+ pages) and page numbers, rejoins hyphenated words, rebuilds paragraphs from short last lines. Chapters: bookmarks, else "Chapter ..." lines, else chapter-style running headers. Tested on a print-style PDF of the example (justified, alternating headers, page numbers, Gutenberg license): same word timings as the EPUB. A title heading identical to a running header is removed with the headers (the chapter then falls back to the PDF's metadata title). Scanned and password-protected PDFs stop with a clear message.
+- M4B audio (Nov 2026): a LibriVox m4b and a built test file with cover art + chapter markers sync and play; m4b/m4a are served and stored as audio/mp4.
 - Alignment on synthetic data: >90% of words timed, average error about 0.01s, worst under 1s, with dropped/misheard words, filler, audiobook intro credits, and a section missing from the audio (correctly left untimed). About 1s for a 120k-word novel.
 - Chunked transcription plumbing with a stub transcriber: chunk overlap de-duplication, multi-file offsets, caching, joining multi-file audio with ffmpeg.
 - Both web apps in headless Chromium: loading, playback, word highlighting, line seeking, chapters, options menu, resume position, library loading, 600×600 layout, light/dark (index.html), phone width.
