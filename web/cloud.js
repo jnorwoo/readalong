@@ -36,6 +36,16 @@
   const CHUNK = 8 * 1024 * 1024;          // resumable upload chunk (multiple of 256 KiB)
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // Browsers and phones label audiobook files inconsistently (an .m4b may come through
+  // as "", "audio/x-m4b" or "application/octet-stream"). Chrome plays them anyway, but
+  // Safari is stricter, so use the standard type for the file's extension.
+  const AUDIO_TYPES = { m4b: "audio/mp4", m4a: "audio/mp4", mp4: "audio/mp4", aac: "audio/aac", mp3: "audio/mpeg",
+    ogg: "audio/ogg", opus: "audio/ogg", oga: "audio/ogg", flac: "audio/flac", wav: "audio/wav", webm: "audio/webm" };
+  function audioType(name, type) {
+    const ext = String(name || "").split(".").pop().toLowerCase();
+    return AUDIO_TYPES[ext] || (type && type !== "application/octet-stream" ? type : "audio/mpeg");
+  }
   const signedOutError = () => Object.assign(new Error("Not connected to Google Drive."), { signedOut: true });
 
   // ---------------------------------------------------------------- sign-in
@@ -189,7 +199,7 @@
   }
 
   async function uploadLarge(meta, file, onProgress, signal) {
-    const type = file.type || "application/octet-stream";
+    const type = meta.mimeType || file.type || "application/octet-stream";
     const start = await api("/upload/drive/v3/files?uploadType=resumable&fields=id", {
       method: "POST",
       headers: {
@@ -247,7 +257,8 @@
     const title = data.title || syncFile.name.replace(/\.(sync\.)?json$/i, "");
     const parent = await folder();
     const audioId = await uploadLarge(
-      { name: audioFile.name, parents: [parent], appProperties: { ra: "audio" } }, audioFile, onProgress, signal);
+      { name: audioFile.name, parents: [parent], mimeType: audioType(audioFile.name, audioFile.type), appProperties: { ra: "audio" } },
+      audioFile, onProgress, signal);
     // The book entry is written last, so a cancelled upload never shows up as a book.
     return createFile({
       name: syncFile.name, parents: [parent], mimeType: "application/json",
@@ -276,12 +287,13 @@
     catch { return null; }
   }
 
-  async function fetchFile(fileId, onProgress, signal) {
+  async function fetchFile(fileId, onProgress, signal, isAudio) {
     const hit = await cached(fileId);
     if (hit) return hit;
-    const meta = await (await api(`/drive/v3/files/${fileId}?fields=size,mimeType`, { signal })).json();
+    const meta = await (await api(`/drive/v3/files/${fileId}?fields=name,size,mimeType`, { signal })).json();
     const r = await api(`/drive/v3/files/${fileId}?alt=media`, { signal });
-    const type = meta.mimeType || r.headers.get("Content-Type") || "application/octet-stream";
+    const stored = meta.mimeType || r.headers.get("Content-Type") || "application/octet-stream";
+    const type = isAudio ? audioType(meta.name, stored) : stored;
     const total = +meta.size || 0;
     let got = 0;
     const counted = r.body.pipeThrough(new TransformStream({
@@ -298,7 +310,7 @@
   /** Download (or read from the offline copy) a Drive book: { sync: text, audio: Blob }. */
   async function getBook(book, { onProgress, signal } = {}) {
     const sync = await (await fetchFile(book.drive.sync, null, signal)).text();
-    const audio = await fetchFile(book.drive.audio, onProgress, signal);
+    const audio = await fetchFile(book.drive.audio, onProgress, signal, true);
     return { sync, audio };
   }
 
@@ -383,6 +395,7 @@
 
   window.ReadalongCloud = {
     enabled: !!CFG.clientId,
+    audioType,
     signedIn, startSignIn, signOut,
     listBooks, addBook, getBook, isDownloaded, removeDownload,
     getPosition, savePosition,

@@ -420,7 +420,9 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
     if (state.audioFile && audio.src.startsWith("blob:")) URL.revokeObjectURL(audio.src);
     state.audioFile = file;
     state.audioName = file.name;
-    audio.src = URL.createObjectURL(file);
+    // Give .m4b/.m4a etc. their standard type; some browsers (Safari) won't play a mislabeled file.
+    const type = Cloud.audioType ? Cloud.audioType(file.name, file.type) : file.type;
+    audio.src = URL.createObjectURL(type === file.type ? file : new Blob([file], { type }));
     maybeStart();
   }
 
