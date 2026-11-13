@@ -1,0 +1,24 @@
+# Books you own: never commit these (copyright). They stay on your computer.
+web/books/private/
+web/library.private.json
+books/
+examples/
+*.aax
+*.aaxc
+
+# book_sync.py working files
+.book_sync_cache_*/
+*.concat.txt
+current_chunk.wav
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

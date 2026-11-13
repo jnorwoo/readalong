@@ -1,0 +1,3 @@
+# Transcription with word timestamps. Installs PyTorch as a dependency.
+# With an NVIDIA GPU, install the CUDA build of PyTorch first (see pytorch.org).
+whisperx>=3.1

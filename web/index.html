@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Read-along</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Literata:opsz,wght@7..72,400;7..72,500;7..72,600&family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f1f3f6;
+  --surface: #e4e8ee;
+  --ink: #1d2433;
+  --muted: #5d6679;
+  --dim: #9aa2b2;
+  --lamp: #8a5d00;
+  --lamp-glow: #f3dfaa;
+  --line: #cfd5df;
+  --read: "Literata", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --ui: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, sans-serif;
+  color-scheme: light;
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b2130;
+    --surface: #242c3d;
+    --ink: #e9e5db;
+    --muted: #a3abbd;
+    --dim: #5f6a82;
+    --lamp: #f0c060;
+    --lamp-glow: rgba(240, 192, 96, 0.14);
+    --line: #323c51;
+    color-scheme: dark;
+  }
+}
+*, *::before, *::after { box-sizing: inherit; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--ui);
+  font-size: 16px;
+  display: flex;
+  flex-direction: column;
+}
+button, select, input { font: inherit; color: inherit; }
+button {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.45rem 0.9rem;
+  cursor: pointer;
+}
+button:hover { background: var(--surface); }
+:focus-visible { outline: 2px solid var(--lamp); outline-offset: 2px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---------- top bar ---------- */
+header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.9rem 1.25rem;
+  flex-wrap: wrap;
+}
+#bookTitle {
+  font-family: var(--read);
+  font-weight: 600;
+  font-size: 1.05rem;
+  margin: 0;
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+select {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.4rem 0.6rem;
+  max-width: 16rem;
+}
+button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+
+/* ---------- empty state ---------- */
+#loader {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: 2rem 1.25rem;
+}
+.drop {
+  width: min(34rem, 100%);
+  border: 2px dashed var(--line);
+  border-radius: 20px;
+  padding: 2.5rem 2rem;
+  text-align: left;
+}
+.drop.over { border-color: var(--lamp); background: var(--lamp-glow); }
+.drop h2 {
+  font-family: var(--read);
+  font-weight: 500;
+  font-size: 1.9rem;
+  line-height: 1.2;
+  margin: 0 0 0.75rem;
+}
+.drop p { color: var(--muted); line-height: 1.55; margin: 0 0 1.4rem; max-width: 32em; }
+.picks { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.picks label {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.55rem 1rem;
+  cursor: pointer;
+}
+.picks label:hover { background: var(--surface); }
+.picks label:focus-within { outline: 2px solid var(--lamp); outline-offset: 2px; }
+.picks input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+#libBox { margin-top: 1.6rem; border-top: 1px solid var(--line); padding-top: 1.2rem; }
+#libBox h3 { font-size: 1rem; margin: 0 0 0.7rem; color: var(--muted); font-weight: 400; }
+#libList { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+#libList button { width: 100%; text-align: left; border-radius: 12px; padding: 0.7rem 0.9rem; }
+#libList .t { font-family: var(--read); font-weight: 600; display: block; }
+#libList .a { color: var(--muted); font-size: 0.9rem; }
+.status { margin-top: 1rem; font-size: 0.95rem; color: var(--muted); min-height: 1.4em; }
+.status.error { color: #c0392b; }
+@media (prefers-color-scheme: dark) { .status.error { color: #ff8a7a; } }
+
+/* ---------- reading view ---------- */
+#reader { flex: 1; min-height: 0; display: none; position: relative; }
+#reader.on { display: block; }
+#lines {
+  height: 100%;
+  overflow-y: auto;
+  padding: 40vh 1.25rem;
+  scroll-behavior: auto;
+}
+.line {
+  font-family: var(--read);
+  font-size: clamp(1.15rem, 1rem + 0.8vw, 1.45rem);
+  line-height: 1.6;
+  max-width: 44rem;
+  margin: 0 auto 0.6em;
+  color: var(--dim);
+  cursor: pointer;
+  border-radius: 8px;
+  padding: 0.1em 0.4em;
+  transition: color 0.25s, font-size 0.25s;
+}
+.line:hover { background: var(--surface); }
+.line.near { color: var(--muted); }
+.line.now {
+  color: var(--ink);
+  font-size: clamp(1.45rem, 1.2rem + 1.3vw, 2.05rem);
+  line-height: 1.45;
+  font-weight: 500;
+}
+.line.now .w.lit { color: var(--lamp); }
+.line.chapter-start::before {
+  content: attr(data-chapter);
+  display: block;
+  font-family: var(--ui);
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 2.2em 0 0.6em;
+  font-weight: 700;
+}
+#follow {
+  position: absolute;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--ink);
+  color: var(--bg);
+  border-color: var(--ink);
+  display: none;
+}
+#follow.show { display: block; }
+
+/* glasses preview: a small, high-contrast panel like the in-lens display */
+#glass {
+  display: none;
+  height: 100%;
+  place-items: center;
+  padding: 1.25rem;
+}
+#reader.glasses #lines, #reader.glasses #follow { display: none; }
+#reader.glasses #glass { display: grid; }
+.lens {
+  width: min(360px, 90vw);
+  aspect-ratio: 1;
+  background: #000;
+  border-radius: 28px;
+  padding: 26px 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 14px;
+  box-shadow: 0 0 0 6px var(--surface);
+  color-scheme: dark;
+}
+.lens .prev { color: #7d7d7d; font: 500 17px/1.35 var(--ui); }
+.lens .cur { color: #fff; font: 700 23px/1.35 var(--ui); }
+.lens .cur .w.lit { color: #ffd166; }
+.lens-note { margin-top: 1rem; color: var(--muted); font-size: 0.9rem; text-align: center; max-width: 24rem; }
+
+/* ---------- transport ---------- */
+footer {
+  border-top: 1px solid var(--line);
+  padding: 0.75rem 1.25rem 1rem;
+  display: none;
+}
+footer.on { display: block; }
+.scrub { position: relative; height: 22px; margin-bottom: 0.4rem; }
+.ticks { position: absolute; inset: 9px 0 auto; height: 4px; pointer-events: none; }
+.ticks i { position: absolute; top: -3px; width: 2px; height: 10px; background: var(--dim); border-radius: 1px; }
+input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
+#seek { position: absolute; inset: 0; height: 22px; background: transparent; }
+.row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.times { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 0.95rem; }
+.spacer { flex: 1; }
+#play { width: 3.2rem; height: 3.2rem; padding: 0; background: var(--ink); color: var(--bg); border-color: var(--ink); font-size: 1.1rem; }
+#play:hover { opacity: 0.9; }
+.small { font-size: 0.9rem; color: var(--muted); display: flex; align-items: center; gap: 0.35rem; }
+.small button { padding: 0.25rem 0.6rem; }
+#resume { display: none; }
+#resume.show { display: inline-block; }
+
+@media (max-width: 560px) {
+  header { padding: 0.75rem 1rem; }
+  #lines { padding: 35vh 1rem; }
+  .hide-sm { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .line { transition: none; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="bookTitle">Read-along</h1>
+  <label class="visually-hidden" for="chapters">Chapter</label>
+  <select id="chapters" hidden></select>
+  <button id="glassBtn" aria-pressed="false" hidden title="Shortcut: G">Glasses view</button>
+</header>
+
+<main id="loader">
+  <div class="drop" id="drop">
+    <h2>Read along with your audiobook</h2>
+    <p>Choose the audiobook file and the <strong>.sync.json</strong> (or .lrc) that book_sync.py made for it. You can also drop both here at once. Nothing is uploaded; it all stays on this computer.</p>
+    <div class="picks">
+      <label>Choose audio<input type="file" id="audioIn" accept="audio/*,.m4b,.m4a,.mp3,.ogg,.opus,.flac,.wav"></label>
+      <label>Choose sync file<input type="file" id="syncIn" accept=".json,.lrc,application/json"></label>
+    </div>
+    <div class="status" id="status" role="status"></div>
+    <div id="libBox" hidden>
+      <h3>Or open a book from your library</h3>
+      <ul id="libList"></ul>
+    </div>
+  </div>
+</main>
+
+<section id="reader" aria-label="Book text">
+  <div id="lines"></div>
+  <button id="follow">Back to the current line</button>
+  <div id="glass">
+    <div>
+      <div class="lens" aria-live="off">
+        <div class="prev" id="gPrev"></div>
+        <div class="cur" id="gCur"></div>
+      </div>
+      <p class="lens-note">A rough preview of the text in a small in-lens display. Shorter lines (book_sync.py --max-words 8) read better here.</p>
+    </div>
+  </div>
+</section>
+
+<footer id="transport">
+  <div class="scrub">
+    <div class="ticks" id="ticks"></div>
+    <label class="visually-hidden" for="seek">Position</label>
+    <input type="range" id="seek" min="0" max="1000" step="1" value="0">
+  </div>
+  <div class="row">
+    <button id="back" title="Back 15 seconds (←)">−15s</button>
+    <button id="play" aria-label="Play" title="Play or pause (Space)">▶</button>
+    <button id="fwd" title="Forward 15 seconds (→)">+15s</button>
+    <span class="times"><span id="cur">0:00</span> / <span id="dur">0:00</span></span>
+    <button id="resume"></button>
+    <span class="spacer"></span>
+    <span class="small hide-sm">Text timing
+      <button id="earlier" title="Show text earlier">−</button>
+      <span id="offset">0.0s</span>
+      <button id="later" title="Show text later">+</button>
+    </span>
+    <label class="small">Speed
+      <select id="speed">
+        <option>0.8</option><option selected>1</option><option>1.1</option><option>1.25</option>
+        <option>1.5</option><option>1.75</option><option>2</option>
+      </select>
+    </label>
+  </div>
+</footer>
+
+<audio id="audio" preload="metadata"></audio>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const audio = $("audio");
+  const state = {
+    title: "", lines: [], starts: [], chapters: [],
+    idx: -1, winStart: 0, winEnd: 0, offset: 0,
+    audioFile: null, audioName: "", syncLoaded: false, follow: true, followTimer: null,
+    expectAudio: null,
+  };
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ---------- storage (per-viewer convenience; may be unavailable) ----------
+  const store = {
+    get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  };
+  const keyFor = () => "readalong:" + (state.bookId || state.title || state.audioName || "book");
+
+  // ---------- formatting ----------
+  function clock(t) {
+    if (!isFinite(t)) t = 0;
+    t = Math.max(0, Math.floor(t));
+    const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+    return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s).padStart(2, "0");
+  }
+  const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  // ---------- parsing sync files ----------
+  function parseJSON(text) {
+    const d = JSON.parse(text);
+    if (!Array.isArray(d.lines)) throw new Error("This JSON has no “lines” list. Use the .sync.json file from book_sync.py.");
+    return {
+      title: d.title || "",
+      audio: d.audio || null,
+      chapters: Array.isArray(d.chapters) ? d.chapters : [],
+      lines: d.lines.filter((l) => typeof l.start === "number").map((l) => ({
+        start: l.start, end: l.end ?? l.start, text: l.text || "",
+        words: Array.isArray(l.words) ? l.words : null,
+      })),
+    };
+  }
+
+  function lrcTime(m, s) { return parseInt(m, 10) * 60 + parseFloat(s); }
+  function parseLRC(text) {
+    const lines = []; let title = "";
+    for (const raw of text.split(/\r?\n/)) {
+      const ti = raw.match(/^\[ti:(.*)\]$/i);
+      if (ti) { title = ti[1].trim(); continue; }
+      const stamps = [...raw.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)];
+      if (!stamps.length) continue;
+      let body = raw.replace(/\[(\d+):(\d+(?:\.\d+)?)\]/g, "");
+      let words = null;
+      if (/<\d+:\d+(?:\.\d+)?>/.test(body)) {          // enhanced LRC word tags
+        words = [];
+        for (const m of body.matchAll(/<(\d+):(\d+(?:\.\d+)?)>\s*([^<]*)/g)) {
+          for (const w of m[3].trim().split(/\s+/).filter(Boolean)) words.push({ w, s: lrcTime(m[1], m[2]), e: null });
+        }
+        body = words.map((w) => w.w).join(" ");
+      }
+      for (const st of stamps) lines.push({ start: lrcTime(st[1], st[2]), end: null, text: body.trim(), words });
+    }
+    lines.sort((a, b) => a.start - b.start);
+    lines.forEach((l, i) => { l.end = lines[i + 1] ? lines[i + 1].start : l.start + 5; });
+    return { title, audio: null, chapters: [], lines: lines.filter((l) => l.text) };
+  }
+
+  // ---------- loading ----------
+  function setStatus(msg, isError) {
+    $("status").textContent = msg;
+    $("status").classList.toggle("error", !!isError);
+  }
+
+  async function loadSync(file) {
+    return applySync(file.name, () => file.text());
+  }
+  async function applySync(name, getText) {
+    try {
+      const text = await getText();
+      const data = /\.lrc$/i.test(name) ? parseLRC(text) : parseJSON(text);
+      if (!data.lines.length) throw new Error("The sync file has no timed lines. Re-run book_sync.py and check its coverage report.");
+      state.title = data.title || name.replace(/\.(sync\.json|json|lrc)$/i, "");
+      state.lines = data.lines;
+      state.starts = data.lines.map((l) => l.start);
+      state.chapters = data.chapters;
+      state.expectAudio = data.audio;
+      state.syncLoaded = true;
+      maybeStart();
+    } catch (e) {
+      setStatus(e instanceof SyntaxError ? "That file isn’t valid JSON. Choose the .sync.json or .lrc file." : e.message, true);
+    }
+  }
+
+  function loadAudio(file) {
+    if (state.audioFile && audio.src.startsWith("blob:")) URL.revokeObjectURL(audio.src);
+    state.audioFile = file;
+    state.audioName = file.name;
+    audio.src = URL.createObjectURL(file);
+    maybeStart();
+  }
+
+  function maybeStart() {
+    const have = [state.audioFile && "audio", state.syncLoaded && "sync file"].filter(Boolean);
+    if (have.length < 2) {
+      setStatus(have.length ? `Loaded the ${have[0]}. Now choose the ${have[0] === "audio" ? "sync file" : "audio"}.` : "");
+      return;
+    }
+    start();
+  }
+
+  function handleFiles(files) {
+    for (const f of files) {
+      if (/\.(json|lrc)$/i.test(f.name)) loadSync(f);
+      else if (/^audio\//.test(f.type) || /\.(m4b|m4a|mp3|ogg|opus|flac|wav|aac)$/i.test(f.name)) loadAudio(f);
+      else setStatus(`“${f.name}” isn’t an audio or sync file.`, true);
+    }
+  }
+
+  // ---------- library (works when served, e.g. python tools/serve.py) ----------
+  async function loadLibrary() {
+    const books = [];
+    for (const url of ["library.json", "library.private.json"]) {
+      try {
+        const r = await fetch(url, { cache: "no-cache" });
+        if (r.ok) (await r.json()).books.forEach((b) => books.push(b));
+      } catch {}
+    }
+    if (!books.length) return;
+    $("libList").innerHTML = books.map((b, i) =>
+      `<li><button data-i="${i}"><span class="t">${esc(b.title)}</span>${b.author ? `<span class="a">${esc(b.author)}</span>` : ""}</button></li>`).join("");
+    $("libBox").hidden = false;
+    $("libList").onclick = (e) => {
+      const btn = e.target.closest("button"); if (!btn) return;
+      const b = books[+btn.dataset.i];
+      state.bookId = b.id;
+      state.audioFile = { name: b.audio };
+      state.audioName = b.audio.split("/").pop();
+      audio.src = b.audio;
+      applySync(b.sync, async () => {
+        const r = await fetch(b.sync, { cache: "no-cache" });
+        if (!r.ok) throw new Error("Couldn’t load " + b.sync + ". Re-run tools/add_to_library.py for this book.");
+        return r.text();
+      });
+    };
+  }
+  loadLibrary();
+
+  $("audioIn").addEventListener("change", (e) => e.target.files[0] && loadAudio(e.target.files[0]));
+  $("syncIn").addEventListener("change", (e) => e.target.files[0] && loadSync(e.target.files[0]));
+  const drop = $("drop");
+  ["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", (e) => handleFiles(e.dataTransfer.files));
+  document.addEventListener("dragover", (e) => e.preventDefault());
+  document.addEventListener("drop", (e) => { e.preventDefault(); if (e.target.closest && !e.target.closest("#drop")) handleFiles(e.dataTransfer.files); });
+
+  // ---------- start reading view ----------
+  function start() {
+    $("loader").hidden = true;
+    $("loader").style.display = "none";
+    $("reader").classList.add("on");
+    $("transport").classList.add("on");
+    $("glassBtn").hidden = false;
+    $("bookTitle").textContent = state.title;
+    document.title = state.title + " – Read-along";
+
+    if (state.expectAudio && state.audioName && state.expectAudio !== state.audioName) {
+      console.warn(`Sync file was made for “${state.expectAudio}”, loaded “${state.audioName}”.`);
+    }
+
+    const sel = $("chapters");
+    if (state.chapters.length > 1) {
+      sel.innerHTML = state.chapters.map((c, i) => `<option value="${i}">${esc(c.title)}</option>`).join("");
+      sel.hidden = false;
+    }
+
+    const saved = store.get(keyFor());
+    if (saved) {
+      state.offset = saved.offset || 0;
+      $("offset").textContent = state.offset.toFixed(1) + "s";
+      if (saved.pos > 5) {
+        const r = $("resume");
+        r.textContent = "Resume at " + clock(saved.pos);
+        r.classList.add("show");
+        r.onclick = () => { seekTo(saved.pos); r.classList.remove("show"); };
+      }
+      if (saved.speed) { $("speed").value = String(saved.speed); audio.playbackRate = saved.speed; }
+    }
+    renderWindow(0);
+    update(true);
+  }
+
+  audio.addEventListener("loadedmetadata", () => {
+    $("dur").textContent = clock(audio.duration);
+    const ticks = $("ticks");
+    ticks.innerHTML = state.chapters.map((c) => `<i style="left:${(100 * c.start / audio.duration).toFixed(3)}%"></i>`).join("");
+  });
+  audio.addEventListener("error", () => {
+    if (state.audioFile) setStatus("This browser can’t play that audio format. Try Chrome or Safari, or convert it to .m4a or .mp3.", true);
+  });
+
+  // ---------- line lookup ----------
+  function lineAt(t) {
+    const s = state.starts; let lo = 0, hi = s.length - 1, ans = -1;
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (s[mid] <= t) { ans = mid; lo = mid + 1; } else hi = mid - 1; }
+    return ans;
+  }
+  function chapterAt(t) {
+    let ans = 0;
+    state.chapters.forEach((c, i) => { if (c.start <= t) ans = i; });
+    return ans;
+  }
+  const textTime = () => audio.currentTime + state.offset;
+
+  // ---------- rendering (only a window of lines around the current one) ----------
+  const WIN = 40;
+  function lineHTML(l, i) {
+    const chStart = state.chapters.find((c) => Math.abs(c.start - l.start) < 0.001);
+    const chAttr = chStart ? ` class="line chapter-start" data-chapter="${esc(chStart.title)}"` : ` class="line"`;
+    const body = l.words
+      ? l.words.map((w, j) => `<span class="w" data-j="${j}">${esc(w.w)}</span>`).join(" ")
+      : esc(l.text);
+    return `<p${chAttr} data-i="${i}">${body}</p>`;
+  }
+  function renderWindow(center) {
+    const n = state.lines.length;
+    state.winStart = Math.max(0, center - WIN);
+    state.winEnd = Math.min(n, center + WIN + 1);
+    let html = "";
+    for (let i = state.winStart; i < state.winEnd; i++) html += lineHTML(state.lines[i], i);
+    $("lines").innerHTML = html;
+    state.idx = -2;   // force re-highlight
+  }
+  const lineEl = (i) => $("lines").querySelector(`[data-i="${i}"]`);
+
+  function centerOn(el, smooth) {
+    const box = $("lines");
+    const top = el.offsetTop - box.clientHeight / 2 + el.offsetHeight / 2;
+    box.scrollTo({ top, behavior: smooth && !reduceMotion ? "smooth" : "auto" });
+  }
+
+  function update(jump) {
+    const t = textTime();
+    const i = Math.max(0, lineAt(t));
+    if (i !== state.idx) {
+      if (i < state.winStart + 8 || i > state.winEnd - 9) renderWindow(i);
+      $("lines").querySelectorAll(".now, .near").forEach((el) => el.classList.remove("now", "near"));
+      const el = lineEl(i);
+      if (el) {
+        el.classList.add("now");
+        [i - 1, i + 1].forEach((k) => { const e = lineEl(k); if (e) e.classList.add("near"); });
+        if (state.follow) centerOn(el, !jump && Math.abs(i - state.idx) < 4);
+      }
+      state.idx = i;
+      const prev = state.lines[i - 1];
+      $("gPrev").textContent = prev ? prev.text : "";
+      const cur = state.lines[i];
+      $("gCur").innerHTML = cur.words ? cur.words.map((w, j) => `<span class="w" data-j="${j}">${esc(w.w)}</span>`).join(" ") : esc(cur.text);
+      if (!$("chapters").hidden) $("chapters").value = String(chapterAt(cur.start));
+    }
+    // light up words already spoken
+    const cur = state.lines[i];
+    if (cur && cur.words) {
+      let lit = true;
+      const flags = cur.words.map((w) => { if (w.s != null) lit = w.s <= t; return lit; });
+      for (const root of [lineEl(i), $("gCur")]) {
+        if (!root) continue;
+        root.querySelectorAll(".w").forEach((s) => s.classList.toggle("lit", flags[+s.dataset.j]));
+      }
+    }
+    $("cur").textContent = clock(audio.currentTime);
+    if (!seeking && audio.duration) $("seek").value = String(Math.round(1000 * audio.currentTime / audio.duration));
+  }
+
+  let raf = 0;
+  function loop() { update(false); raf = requestAnimationFrame(loop); }
+  audio.addEventListener("play", () => { $("play").textContent = "❚❚"; $("play").setAttribute("aria-label", "Pause"); cancelAnimationFrame(raf); loop(); });
+  audio.addEventListener("pause", () => { $("play").textContent = "▶"; $("play").setAttribute("aria-label", "Play"); cancelAnimationFrame(raf); update(false); save(); });
+  audio.addEventListener("seeked", () => update(true));
+
+  // ---------- controls ----------
+  function seekTo(t) { audio.currentTime = Math.max(0, Math.min(t, audio.duration || t)); state.follow = true; $("follow").classList.remove("show"); update(true); }
+  function toggle() { audio.paused ? audio.play() : audio.pause(); }
+  $("play").onclick = toggle;
+  $("back").onclick = () => seekTo(audio.currentTime - 15);
+  $("fwd").onclick = () => seekTo(audio.currentTime + 15);
+  let seeking = false;
+  $("seek").addEventListener("input", () => { seeking = true; $("cur").textContent = clock(audio.duration * $("seek").value / 1000); });
+  $("seek").addEventListener("change", () => { seeking = false; seekTo(audio.duration * $("seek").value / 1000); });
+  $("speed").onchange = () => { audio.playbackRate = parseFloat($("speed").value); save(); };
+  $("chapters").onchange = () => { const c = state.chapters[+$("chapters").value]; if (c) seekTo(c.start - state.offset); };
+  function nudge(d) { state.offset = Math.round((state.offset + d) * 10) / 10; $("offset").textContent = state.offset.toFixed(1) + "s"; update(true); save(); }
+  $("earlier").onclick = () => nudge(0.25);
+  $("later").onclick = () => nudge(-0.25);
+
+  $("lines").addEventListener("click", (e) => {
+    const p = e.target.closest(".line"); if (!p) return;
+    const l = state.lines[+p.dataset.i];
+    seekTo(l.start - state.offset + 0.01);
+    if (audio.paused) audio.play();
+  });
+
+  // pause auto-follow while the reader scrolls by hand
+  function userScrolled() {
+    state.follow = false;
+    $("follow").classList.add("show");
+    clearTimeout(state.followTimer);
+    state.followTimer = setTimeout(backToLine, 8000);
+  }
+  function backToLine() { state.follow = true; $("follow").classList.remove("show"); const el = lineEl(state.idx); if (el) centerOn(el, true); }
+  $("lines").addEventListener("wheel", userScrolled, { passive: true });
+  $("lines").addEventListener("touchmove", userScrolled, { passive: true });
+  $("follow").onclick = backToLine;
+
+  $("glassBtn").onclick = () => {
+    const on = !$("reader").classList.contains("glasses");
+    $("reader").classList.toggle("glasses", on);
+    $("glassBtn").setAttribute("aria-pressed", String(on));
+    if (!on) { const el = lineEl(state.idx); if (el) centerOn(el, false); }
+  };
+
+  document.addEventListener("keydown", (e) => {
+    if (!state.syncLoaded || !state.audioFile) return;
+    const tag = e.target.tagName;
+    if (tag === "SELECT" || (tag === "INPUT" && e.target.type !== "range")) return;
+    if (tag === "BUTTON" && (e.key === " " || e.key === "Enter")) return;  // let the button act
+    if (e.target.type === "range" && e.key !== " ") return;                 // arrows move the slider
+    if (e.key === " ") { e.preventDefault(); toggle(); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); seekTo(audio.currentTime - 15); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); seekTo(audio.currentTime + 15); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); const l = state.lines[Math.max(0, state.idx - 1)]; seekTo(l.start - state.offset + 0.01); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); const l = state.lines[Math.min(state.lines.length - 1, state.idx + 1)]; seekTo(l.start - state.offset + 0.01); }
+    else if (e.key.toLowerCase() === "g") $("glassBtn").click();
+  });
+
+  // ---------- remember place ----------
+  function save() {
+    if (!state.syncLoaded) return;
+    store.set(keyFor(), { pos: audio.currentTime, offset: state.offset, speed: audio.playbackRate });
+  }
+  setInterval(() => { if (!audio.paused) save(); }, 5000);
+  addEventListener("pagehide", save);
+})();
+</script>
+</body>
+</html>
