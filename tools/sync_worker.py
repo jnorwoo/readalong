@@ -275,6 +275,28 @@ def sync_python() -> str:
              "this helper with the Python that has it, e.g. .venv\\Scripts\\python tools\\sync_worker.py")
 
 
+class KeepAwake:
+    """Stops Windows from going to sleep while a book syncs (screen may still turn off)."""
+
+    def __enter__(self):
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)  # CONTINUOUS | SYSTEM_REQUIRED
+            except Exception:
+                pass
+        return self
+
+    def __exit__(self, *exc):
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+            except Exception:
+                pass
+        return False
+
+
 def tagged(v: str) -> str:
     return f"appProperties has {{ key='ra' and value='{v}' }}"
 
@@ -523,14 +545,16 @@ def main(argv: list[str] | None = None) -> None:
     if PYTHON != sys.executable:
         log(f"using {PYTHON} for syncing (it has WhisperX).")
     if args.add:
-        return add_folder(drive, args.add, worker, sync_args, args.title, args.author, args.language or None)
+        with KeepAwake():
+            return add_folder(drive, args.add, worker, sync_args, args.title, args.author, args.language or None)
     log(f"sync helper on {worker} is watching your Google Drive for books to sync. Ctrl+C to stop.")
     while True:
         try:
             heartbeat(drive, worker)
             for f in pending_jobs(drive, worker):
                 try:
-                    run_job(drive, f, worker, sync_args)
+                    with KeepAwake():
+                        run_job(drive, f, worker, sync_args)
                 except Exception as e:
                     msg = re.sub(r"^error:\s*", "", str(e))
                     log(f"  failed: {msg}")
