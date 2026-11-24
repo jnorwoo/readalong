@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 sync_worker.py - make sync files on this PC for books added from the web app.
 
 In the web app (phone or computer), "Add a book" with an audiobook + its ebook
@@ -9,6 +9,9 @@ and puts the finished book into your Drive library. Progress shows in the web ap
 
     python tools/sync_worker.py          # keep running and check every 20 seconds
     python tools/sync_worker.py --once   # do any waiting jobs, then exit
+    python tools/sync_worker.py --add "C:\Books\Author - Title"
+        # sync a book folder on this PC (one audio file or many parts, plus the
+        # ebook), then upload it to your Drive library; progress shows on the website
 
 First run asks for the Google client ID and secret (the same ones as in
 docs/google-drive.md) and shows a code to enter at google.com/device. They're
@@ -94,8 +97,12 @@ class Drive:
         if not self.cfg.get("client_id"):
             print("Enter the Google client ID and secret from your Google Cloud project")
             print("(Google Auth Platform -> Clients; see docs/google-drive.md).")
-            self.cfg["client_id"] = input("Client ID: ").strip()
-            self.cfg["client_secret"] = getpass.getpass("Client secret (hidden): ").strip()
+            try:
+                self.cfg["client_id"] = input("Client ID: ").strip()
+                self.cfg["client_secret"] = getpass.getpass("Client secret (hidden): ").strip()
+            except EOFError:
+                sys.exit("\nerror: no settings yet, and nobody to type them. Run this once in a terminal "
+                         f"to enter the client ID and secret (they're saved in {self.path}).")
             self.save()
         if not self.cfg.get("refresh_token"):
             self.sign_in()
@@ -187,6 +194,58 @@ class Drive:
     def read_json(self, file_id: str) -> dict:
         return self.request("GET", f"/drive/v3/files/{file_id}", {"alt": "media"})
 
+    def upload_large(self, meta: dict, path: Path, mime: str, progress=None, chunk: int = 32 * 1024 * 1024) -> str:
+        """Resumable upload in 32 MB pieces; survives dropped connections. Returns the file id."""
+        size = path.stat().st_size
+        start = urllib.request.Request(
+            self.apibase + "/upload/drive/v3/files?uploadType=resumable&fields=id",
+            data=json.dumps(meta).encode(), method="POST",
+            headers={"Authorization": "Bearer " + self.token(), "Content-Type": "application/json; charset=UTF-8",
+                     "X-Upload-Content-Type": mime, "X-Upload-Content-Length": str(size)})
+        with urllib.request.urlopen(start, timeout=120) as r:
+            session = r.headers["Location"]
+
+        def put(data: bytes, rng: str):
+            req = urllib.request.Request(session, data=data, method="PUT", headers={"Content-Range": rng})
+            try:
+                with urllib.request.urlopen(req, timeout=600) as r:
+                    return r.status, json.loads(r.read() or b"{}"), None
+            except urllib.error.HTTPError as e:      # 308 = "got it, send more" (urllib calls it an error)
+                return e.code, {}, e.headers.get("Range")
+
+        pos, failures = 0, 0
+        with open(path, "rb") as f:
+            while True:
+                f.seek(pos)
+                data = f.read(chunk)
+                try:
+                    code, body, rng = put(data, f"bytes {pos}-{pos + len(data) - 1}/{size}")
+                except (urllib.error.URLError, OSError):
+                    code, body, rng = 0, {}, None
+                if code in (200, 201):
+                    if progress:
+                        progress(size, size)
+                    return body["id"]
+                if code == 308:
+                    pos = int(rng.split("-")[1]) + 1 if rng else 0
+                    failures = 0
+                    if progress:
+                        progress(pos, size)
+                    continue
+                if (code == 0 or code >= 500) and failures < 6:
+                    failures += 1
+                    time.sleep(2 ** failures)
+                    try:                              # ask how much arrived, then carry on from there
+                        code, body, rng = put(b"", f"bytes */{size}")
+                        if code in (200, 201):
+                            return body["id"]
+                        if code == 308:
+                            pos = int(rng.split("-")[1]) + 1 if rng else 0
+                    except (urllib.error.URLError, OSError):
+                        pass
+                    continue
+                raise RuntimeError(f"upload failed ({code})")
+
     def create(self, meta: dict, data: bytes, mime: str) -> str:
         b = "readalong" + uuid.uuid4().hex
         body = (f"--{b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{json.dumps(meta)}\r\n"
@@ -274,14 +333,28 @@ def run_job(drive: Drive, f: dict, worker: str, sync_args: list[str]) -> None:
                 lines = [l for l in (check.stderr or check.stdout).splitlines() if l.strip()]
                 raise RuntimeError(lines[-1] if lines else "couldn't read the ebook")
 
-    # 2. Sync (10-95%): run book_sync.py and follow its log.
-    job.report("Transcribing (starting WhisperX)", 10, force=True)
+    # 2. Sync (10-95%).
     out = work / "book"
-    cmd = [PYTHON, "-u", str(ROOT / "tools" / "book_sync.py"), str(audio), "--book", str(ebook),
-           "--out", str(out), "--cache-dir", str(work / "cache")]
-    if spec.get("language"):
-        cmd += ["--language", spec["language"]]
+    data = run_sync(job, [audio], ebook, out, work / "cache", spec.get("language"), sync_args, 10, 95)
+
+    # 3. Add the book to the library (95-100%). The audio is already in Drive.
+    job.report("Adding to your library", 95, force=True)
+    book_id = add_book_entry(drive, data, spec["audio"], spec.get("audioName") or "book", title, spec.get("author", ""))
+    job.report("Ready in your library", 100, force=True, status="done", book=book_id)
+    shutil.rmtree(work, ignore_errors=True)
+    log(f"  done: '{title}' is in your library.")
+
+
+def run_sync(job: Job, audio: list[Path], ebook: Path, out: Path, cache: Path, language: str | None,
+             sync_args: list[str], lo: float, hi: float) -> dict:
+    """Run book_sync.py, reporting its progress as lo..hi percent. Returns the sync data."""
+    job.report("Transcribing (starting WhisperX)", lo, force=True)
+    cmd = [PYTHON, "-u", str(ROOT / "tools" / "book_sync.py"), *map(str, audio), "--book", str(ebook),
+           "--out", str(out), "--cache-dir", str(cache)]
+    if language:
+        cmd += ["--language", language]
     cmd += sync_args
+    span = hi - lo
     tail: list[str] = []
     proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, encoding="utf-8", errors="replace")
@@ -295,34 +368,115 @@ def run_job(drive: Drive, f: dict, worker: str, sync_args: list[str]) -> None:
             fi, fn, ci, cn = map(int, m.groups())
             done = ((fi - 1) + (ci - 1) / cn) / fn
             log("  " + line.strip())
-            job.report(f"Transcribing: part {ci} of {cn}", 10 + 75 * done, force=True)
+            part = f"file {fi} of {fn}" if fn > 1 else f"part {ci} of {cn}"
+            job.report(f"Transcribing: {part}", lo + span * 0.88 * done, force=fn == 1 or ci == 1)
         elif line.startswith("transcript:"):
             log("  " + line.strip())
-            job.report("Lining up the text with the audio", 87, force=True)
+            job.report("Lining up the text with the audio", lo + span * 0.9, force=True)
+        elif line.startswith("joining audio"):
+            log("  " + line.strip())
+            job.report("Joining the audio files", lo + span * 0.95, force=True)
         elif line.startswith(("matched", "warning", "error")):
             log("  " + line.strip())
     if proc.wait() != 0:
         msg = next((l for l in reversed(tail) if l.lower().startswith("error")), tail[-1] if tail else "sync failed")
         raise RuntimeError(msg)
+    return json.loads((out.parent / f"{out.name}.sync.json").read_text(encoding="utf-8"))
 
-    # 3. Add the book to the library (95-100%). The audio is already in Drive.
-    job.report("Adding to your library", 95, force=True)
-    sync_path = out.parent / f"{out.name}.sync.json"
-    data = json.loads(sync_path.read_text(encoding="utf-8"))
+
+def add_book_entry(drive: Drive, data: dict, audio_id: str, audio_name: str, title: str, author: str) -> str:
+    """Write the sync file to Drive as a library book pointing at audio_id."""
     data["title"] = title
-    data["audio"] = spec.get("audioName") or data.get("audio")
+    data["audio"] = audio_name
     folder = drive.find(tagged("root") + " and mimeType='application/vnd.google-apps.folder'", "id")
-    book_id = drive.create({
-        "name": Path(spec.get("audioName") or "book").stem + ".sync.json",
+    return drive.create({
+        "name": Path(audio_name).stem + ".sync.json",
         "parents": [folder[0]["id"]] if folder else [],
         "mimeType": "application/json",
-        "appProperties": {"ra": "book", "audio": spec["audio"], "title": clip(title, 110),
-                          "author": clip(spec.get("author", ""), 110),
-                          "duration": str(round(data.get("duration") or 0))},
+        "appProperties": {"ra": "book", "audio": audio_id, "title": clip(title, 110),
+                          "author": clip(author, 110), "duration": str(round(data.get("duration") or 0))},
     }, json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), "application/json")
-    job.report("Ready in your library", 100, force=True, status="done", book=book_id)
-    shutil.rmtree(work, ignore_errors=True)
-    log(f"  done: '{title}' is in your library.")
+
+
+# --------------------------------------------------------------------------
+# Adding a book from a folder on this PC (--add)
+# --------------------------------------------------------------------------
+
+AUDIO_EXT = {".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".opus", ".flac", ".wav"}
+EBOOK_EXT = [".epub", ".pdf", ".txt"]          # in order of preference
+AUDIO_MIME = {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".m4b": "audio/mp4", ".aac": "audio/aac",
+              ".ogg": "audio/ogg", ".opus": "audio/ogg", ".flac": "audio/flac", ".wav": "audio/wav"}
+
+
+def natural_key(p: Path):
+    """'Part 2' before 'Part 10'."""
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", p.name)]
+
+
+def add_folder(drive: Drive, folder: Path, worker: str, sync_args: list[str],
+               title: str | None, author: str | None, language: str | None) -> None:
+    """Sync an audiobook folder (one file or many parts + an ebook) and put it in the Drive library.
+
+    Runs here, so nothing is uploaded until the end: then one audio file (the parts
+    joined) and the sync file. Progress shows on the website as a job.
+    """
+    if not folder.is_dir():
+        sys.exit(f"error: not a folder: {folder}")
+    audio = sorted((p for p in folder.iterdir() if p.suffix.lower() in AUDIO_EXT), key=natural_key)
+    if not audio:
+        sys.exit(f"error: no audio files (mp3, m4b, ...) in {folder}")
+    ebooks = sorted((p for p in folder.iterdir() if p.suffix.lower() in EBOOK_EXT),
+                    key=lambda p: EBOOK_EXT.index(p.suffix.lower()))
+    if not ebooks:
+        sys.exit(f"error: no ebook (EPUB, PDF or TXT) in {folder}. Put the book's ebook in the folder too.")
+    ebook = ebooks[0]
+    # "Author - Title" folder names, as many audiobook folders are.
+    guess_author, _, guess_title = folder.name.partition(" - ")
+    if not guess_title:
+        guess_author, guess_title = "", folder.name
+    title = title or guess_title.strip()
+    author = author if author is not None else guess_author.strip()
+    log(f"adding '{title}'{' by ' + author if author else ''}: {len(audio)} audio file(s) + {ebook.name}")
+
+    # A job so the website shows progress. "local" keeps other helpers from taking it.
+    key = clip(re.sub(r"[^a-z0-9]+", "-", str(folder.resolve()).lower()), 80)
+    for old in drive.find(tagged("job") + f" and appProperties has {{ key='local' and value='{key}' }}", "id"):
+        drive.request("DELETE", f"/drive/v3/files/{old['id']}")
+    root = drive.find(tagged("root") + " and mimeType='application/vnd.google-apps.folder'", "id")
+    job_id = drive.create({
+        "name": f"sync job - {title}.json", "parents": [root[0]["id"]] if root else [],
+        "mimeType": "application/json",
+        "appProperties": {"ra": "job", "status": "working", "progress": "0", "local": key,
+                          "stage": "Starting on " + worker, "title": clip(title, 110), "worker": clip(worker, 60)},
+    }, json.dumps({"version": 1, "local": str(folder), "title": title, "author": author}).encode(), "application/json")
+    job = Job(drive, {"id": job_id})
+    try:
+        # The transcript cache is kept per folder, so a stopped run resumes where it was.
+        work = WORK_DIR / ("local-" + key[-60:])
+        work.mkdir(parents=True, exist_ok=True)
+        out = work / "book"
+        data = run_sync(job, audio, ebook, out, work / "cache", language, sync_args, 0, 90)
+
+        joined = out.parent / f"{out.name}.joined{audio[0].suffix.lower()}" if len(audio) > 1 else audio[0]
+        audio_name = f"{title}{joined.suffix.lower()}"
+        size = joined.stat().st_size
+        log(f"  uploading the audio ({size / 1e6:.0f} MB)...")
+        job.report("Uploading the audio to Drive", 90, force=True)
+        audio_id = drive.upload_large(
+            {"name": audio_name, "parents": [root[0]["id"]] if root else [], "appProperties": {"ra": "audio"},
+             "mimeType": AUDIO_MIME.get(joined.suffix.lower(), "audio/mpeg")},
+            joined, AUDIO_MIME.get(joined.suffix.lower(), "audio/mpeg"),
+            lambda sent, total: job.report(f"Uploading the audio to Drive: {sent / 1e6:.0f} of {total / 1e6:.0f} MB",
+                                           90 + 9 * sent / max(1, total)))
+        book_id = add_book_entry(drive, data, audio_id, audio_name, title, author)
+        job.report("Ready in your library", 100, force=True, status="done", book=book_id)
+        shutil.rmtree(work, ignore_errors=True)
+        log(f"  done: '{title}' is in your library on all your devices.")
+    except BaseException as e:
+        msg = "Stopped on the PC. Run the same --add command to continue." if isinstance(e, KeyboardInterrupt) \
+            else re.sub(r"^error:\s*", "", str(e))
+        job.report("Failed", 0, force=True, status="error", error=clip(msg, 115))
+        raise
 
 
 def heartbeat(drive: Drive, worker: str) -> None:
@@ -342,7 +496,9 @@ def pending_jobs(drive: Drive, worker: str) -> list[dict]:
     # Jobs this PC started but didn't finish (stopped or crashed) are picked up again.
     mine = [f for f in drive.find(tagged("job") + " and appProperties has { key='status' and value='working' }")
             if (f.get("appProperties") or {}).get("worker") == clip(worker, 60)]
-    return sorted(mine + queued, key=lambda f: str(f.get("createdTime", "")))
+    # Jobs started with --add run in their own command; the watcher leaves them alone.
+    jobs = [f for f in mine + queued if not (f.get("appProperties") or {}).get("local")]
+    return sorted(jobs, key=lambda f: str(f.get("createdTime", "")))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -351,6 +507,11 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--interval", type=float, default=20, help="seconds between checks (default 20)")
     ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=f"settings file (default {DEFAULT_CONFIG})")
     ap.add_argument("--sync-args", default="", help='extra book_sync.py options, e.g. "--model medium"')
+    ap.add_argument("--add", type=Path, metavar="FOLDER",
+                    help="sync a book folder on this PC (audio file or parts + ebook) and add it to Drive, then exit")
+    ap.add_argument("--title", help="with --add: book title (default: from the folder name 'Author - Title')")
+    ap.add_argument("--author", help="with --add: author (default: from the folder name)")
+    ap.add_argument("--language", default="en", help="with --add: narration language code (default en; '' = detect)")
     args = ap.parse_args(argv)
 
     global PYTHON
@@ -361,6 +522,8 @@ def main(argv: list[str] | None = None) -> None:
     sync_args = args.sync_args.split()
     if PYTHON != sys.executable:
         log(f"using {PYTHON} for syncing (it has WhisperX).")
+    if args.add:
+        return add_folder(drive, args.add, worker, sync_args, args.title, args.author, args.language or None)
     log(f"sync helper on {worker} is watching your Google Drive for books to sync. Ctrl+C to stop.")
     while True:
         try:

@@ -286,7 +286,8 @@
     return files.map((f) => {
       const p = f.appProperties || {};
       return { id: f.id, title: p.title || f.name, status: p.status || "queued", stage: p.stage || "",
-               progress: +p.progress || 0, error: p.error || "", book: p.book || "", updated: f.modifiedTime };
+               progress: +p.progress || 0, error: p.error || "", book: p.book || "", updated: f.modifiedTime,
+               local: !!p.local };   // started on the PC with sync_worker.py --add
     });
   }
 

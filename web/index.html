@@ -725,7 +725,7 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
         : j.status === "working" ? `${esc(j.stage)} · ${pct}%`
         : esc(j.stage || "Waiting for your PC");
       const bar = j.status === "working" ? `<progress max="100" value="${pct}"></progress>` : "";
-      const acts = (j.status === "error" ? `<button data-retry="${j.id}">Try again</button>` : "") +
+      const acts = (j.status === "error" && !j.local ? `<button data-retry="${j.id}">Try again</button>` : "") +
         (j.status !== "working" ? `<button data-remove="${j.id}">${j.status === "done" ? "Clear" : "Remove"}</button>` : "");
       return `<li><div class="jt">${esc(j.title)}</div><div class="js${j.status === "error" ? " error" : ""}">${line}</div>${bar}` +
         (acts ? `<div class="ja">${acts}</div>` : "") + `</li>`;

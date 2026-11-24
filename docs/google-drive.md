@@ -88,6 +88,19 @@ Turning an audiobook + ebook into a sync file needs WhisperX on a PC with a GPU,
    It runs `book_sync.py` with the Python that has WhisperX: the one you start it with, or else the project's `.venv`. The first time, it asks for the same **client ID and secret** as step 3 above (the secret is typed hidden), then shows a code to enter at google.com/device. These are saved in `~/.readalong/worker.json`, outside the repo.
 3. Leave it running. It checks your Drive every 20 seconds, and the website shows "Your PC's sync helper is running". For each job it downloads the files, checks the ebook can be read, runs `book_sync.py`, and adds the finished book to your library. The audiobook isn't uploaded again; only the small sync file is.
 
+### Books already on your PC, or split into many files
+
+If the book is on the PC already, especially as many MP3 parts ("Part 01.mp3" ... "Part 55.mp3"), skip the website upload and point the helper at the folder:
+
+```bash
+python tools/sync_worker.py --add "C:\Users\you\Documents\audiobooks\Cory Doctorow - Walkaway"
+```
+
+- The folder needs the audio (one file or many parts: mp3, m4b, m4a, ...) and the ebook (EPUB, PDF or TXT). Parts are used in number order, so "Part 2" comes before "Part 10".
+- A folder named "Author - Title" gives the author and title; or pass `--title` and `--author`. `--language` defaults to `en`.
+- It syncs on the PC, joins the parts into one file, then uploads that and the sync file to your Drive library: one upload, no download. Progress shows on the website under **Making sync files**.
+- If you stop it (Ctrl+C), run the same command again: transcription picks up where it stopped. The watcher (`sync_worker.py` without `--add`) can keep running at the same time; it leaves these jobs alone.
+
 Notes:
 - `--once` does the waiting jobs and exits. `--sync-args "--model medium"` passes options to `book_sync.py`.
 - If the helper is stopped mid-job, it picks the job up again next time it starts (the transcript so far is cached in `~/.readalong/jobs/`).

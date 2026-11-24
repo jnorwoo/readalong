@@ -48,7 +48,7 @@ python tools/add_to_library.py my-book "My Book.m4b" "My Book.sync.json" --priva
 
 `--private` keeps the book in `web/books/private/`, which is never committed to git or published. Private books show up when you run the app locally with `tools/serve.py`.
 
-To play your own books on the glasses or your phone, keep them in **Google Drive** instead: pick the audiobook and its ebook in the web app (from any device) and your PC makes the sync file automatically (`python tools/sync_worker.py`), with progress shown on the page. Every device you connect can then play the book offline and pick up where you left off. One-time setup: [docs/google-drive.md](docs/google-drive.md).
+To play your own books on the glasses or your phone, keep them in **Google Drive** instead: pick the audiobook and its ebook in the web app (from any device) and your PC makes the sync file automatically (`python tools/sync_worker.py`), with progress shown on the page. Books already on your PC, including ones split into many MP3 parts, go up with one command: `python tools/sync_worker.py --add "<book folder>"`. Every device you connect can then play the book offline and pick up where you left off. One-time setup: [docs/google-drive.md](docs/google-drive.md).
 
 ## On Meta Ray-Ban Display
 
