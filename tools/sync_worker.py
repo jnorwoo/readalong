@@ -143,8 +143,13 @@ class Drive:
             "refresh_token": self.cfg.get("refresh_token", ""), "grant_type": "refresh_token"})
         if code != 200:
             if t.get("error") == "invalid_grant":
+                # Expired or revoked. Apps in Google's "Testing" mode are signed out every 7 days.
                 self.cfg.pop("refresh_token", None)
                 self.save()
+                if sys.stdin and sys.stdin.isatty():
+                    log("Google sign-in has expired (apps in Testing mode are signed out weekly).")
+                    self.sign_in()
+                    return self.access
                 raise SignedOut()
             raise RuntimeError(f"couldn't refresh Google sign-in: {t.get('error_description') or t.get('error') or code}")
         self.access, self.expires = t["access_token"], time.time() + t.get("expires_in", 3600)
