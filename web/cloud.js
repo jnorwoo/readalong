@@ -287,7 +287,8 @@
       const p = f.appProperties || {};
       return { id: f.id, title: p.title || f.name, status: p.status || "queued", stage: p.stage || "",
                progress: +p.progress || 0, error: p.error || "", book: p.book || "", updated: f.modifiedTime,
-               local: !!p.local };   // started on the PC with sync_worker.py --add
+               local: !!p.local,     // started on the PC with sync_worker.py --add
+               item: p.item || "" }; // an Audiobookshelf book
     });
   }
 
@@ -421,9 +422,61 @@
   async function removeDownload(book) {
     try {
       const c = await caches.open(BOOK_CACHE);
-      await c.delete(cacheKey(book.drive.audio));
+      if (book.drive.audio) await c.delete(cacheKey(book.drive.audio));
       await c.delete(cacheKey(book.drive.sync));
     } catch {}
+  }
+
+  // ---------------------------------------------------------------- Audiobookshelf (abs.js)
+  //
+  // Books on your Audiobookshelf server keep their audio there; only their sync files
+  // live in Drive (tag ra=abssync, item = the Audiobookshelf library item id). The
+  // server address and API key can be kept in Drive too ("audiobookshelf.json"), so the
+  // glasses and the PC sync helper get them without typing.
+
+  /** Sync files for Audiobookshelf books: [{id: "abs:<item>", item, title, author, duration, drive: {sync}}] */
+  async function listAbsBooks() {
+    const files = await findFiles(tagged("abssync"));
+    const seen = new Set();
+    return files.map((f) => {
+      const p = f.appProperties || {};
+      return { id: "abs:" + p.item, item: p.item, title: p.title || f.name, author: p.author || "",
+               duration: +p.duration || 0, abs: true, drive: { sync: f.id } };
+    }).filter((b) => b.item && !seen.has(b.item) && seen.add(b.item));   // newest wins if made twice
+  }
+
+  /** The sync file's text (kept on this device for offline use). */
+  async function getSyncText(fileId) {
+    return (await fetchFile(fileId)).text();
+  }
+
+  /** Queue a sync job for an Audiobookshelf book: the PC helper fetches audio + ebook from the server. */
+  async function addAbsJob({ item, title, author = "", language = "" }) {
+    const parent = await folder();
+    for (const old of await findFiles(`${tagged("job")} and appProperties has { key='item' and value='${item}' }`, "id")) {
+      try { await api(`/drive/v3/files/${old.id}`, { method: "DELETE" }); } catch {}
+    }
+    const job = { version: 1, source: "abs", item, title, author, language };
+    return createFile({
+      name: `sync job - ${title}.json`, parents: [parent], mimeType: "application/json",
+      appProperties: { ra: "job", status: "queued", progress: "0", stage: WAITING, title: clip(title, 110), source: "abs", item },
+    }, new Blob([JSON.stringify(job)], { type: "application/json" }));
+  }
+
+  async function getAbsSettings() {
+    const f = (await findFiles(tagged("abs-config"), "id"))[0];
+    if (!f) return null;
+    try { return await (await api(`/drive/v3/files/${f.id}?alt=media`, { cache: "no-store" })).json(); } catch { return null; }
+  }
+
+  /** Keep the Audiobookshelf address + API key in Drive, or remove them (s = null). */
+  async function saveAbsSettings(s) {
+    const found = await findFiles(tagged("abs-config"), "id");
+    if (!s) { for (const f of found) await api(`/drive/v3/files/${f.id}`, { method: "DELETE" }); return; }
+    const blob = new Blob([JSON.stringify({ url: s.url, token: s.token, user: s.user || "" })], { type: "application/json" });
+    if (found.length) return updateFile(found[0].id, blob);
+    await createFile({ name: "audiobookshelf.json", parents: [await folder()], mimeType: "application/json",
+                       appProperties: { ra: "abs-config" } }, blob);
   }
 
   // ---------------------------------------------------------------- reading positions
@@ -496,6 +549,7 @@
     signedIn, startSignIn, signOut,
     listBooks, addBook, getBook, isDownloaded, removeDownload, removeBook, restoreBook,
     addBookForSync, listJobs, workerSeen, retryJob, removeJob,
+    listAbsBooks, getSyncText, addAbsJob, getAbsSettings, saveAbsSettings,
     getPosition, savePosition,
   };
 })();

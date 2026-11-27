@@ -121,10 +121,13 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
 
 <script src="cloud-config.js"></script>
 <script src="cloud.js"></script>
+<script src="abs.js"></script>
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
-  const audio = $("audio");
+  const Abs = window.ReadalongAbs || null;
+  // Plays one file, or an Audiobookshelf book's many files as one timeline.
+  const audio = Abs ? Abs.trackAudio($("audio")) : $("audio");
   const MAX_WORDS = 7;
   const SPEEDS = [0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
 
@@ -153,6 +156,7 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
   }
   const Cloud = window.ReadalongCloud || { enabled: false, signedIn: () => false };
   const CONNECT = { connect: true, title: "Connect Google Drive", author: "Play your own books from your Drive" };
+  const FOLLOW = { followAbs: true, title: "Follow Audiobookshelf", author: "Text for what’s playing in the Audiobookshelf app" };
 
   async function loadLibrary() {
     const books = [];
@@ -174,7 +178,18 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
           if (await Cloud.isDownloaded(b)) { b.offline = true; books.push(b); }
         }
       }
-      store.set("readalong:drive-books", books.filter((b) => b.drive));
+      store.set("readalong:drive-books", books.filter((b) => b.drive && !b.abs));
+      // Audiobookshelf: the server address + API key come from Drive (entered on the phone).
+      if (Abs) {
+        try {
+          const s = await Cloud.getAbsSettings();
+          if (s && s.token) Abs.adopt(s); else if (s === null && Abs.configured()) Abs.disconnect();
+        } catch {}
+        if (Abs.configured()) {
+          try { for (const b of await Cloud.listAbsBooks()) books.push(b); } catch {}
+          books.push(FOLLOW);
+        }
+      }
     }
     if (Cloud.enabled && !Cloud.signedIn()) books.push(CONNECT);
     st.books = books;
@@ -188,7 +203,8 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
   }
   function renderLibrary() {
     $("books").innerHTML = st.books.map((b, i) => {
-      const tag = b.drive ? `<span class="tag">${b.author ? " · " : ""}Drive${b.offline ? ", downloaded" : ""}</span>` : "";
+      const tag = b.abs ? `<span class="tag">${b.author ? " · " : ""}Audiobookshelf</span>`
+        : b.drive ? `<span class="tag">${b.author ? " · " : ""}Drive${b.offline ? ", downloaded" : ""}</span>` : "";
       const sub = b.author || tag ? `<div class="a">${esc(b.author || "")}${tag}</div>` : "";
       return `<li class="${i === st.sel ? "sel" : ""}"><div class="t">${esc(b.title)}</div>${sub}</li>`;
     }).join("");
@@ -266,13 +282,21 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
   let download = null;   // AbortController while a Drive book downloads
   async function openBook(b) {
     if (b.connect) return connectDrive();
+    if (b.followAbs) return startFollow();
     if (st.loading) return;
     st.loading = true;
     $("libMsg").hidden = false;
     $("libMsg").textContent = "Opening " + b.title + "…";
     try {
-      let data, src;
-      if (b.drive) {
+      let data, src, tracks = null, absPos = null;
+      if (b.abs) {
+        // Audio streams from your Audiobookshelf server; the sync file comes from Drive.
+        const [item, text] = await Promise.all([Abs.getItem(b.item), Cloud.getSyncText(b.drive.sync)]);
+        if (!item.tracks.length) throw new Error("Audiobookshelf has no audio for this book.");
+        data = JSON.parse(text);
+        tracks = item.tracks;
+        absPos = await Abs.getProgress(b.item).catch(() => null);
+      } else if (b.drive) {
         download = new AbortController();
         const got = await Cloud.getBook(b, {
           signal: download.signal,
@@ -295,7 +319,9 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
       let saved = store.get("readalong:" + b.id) || {};
       const remote = Cloud.enabled && Cloud.signedIn() ? await Cloud.getPosition(b.id) : null;
       if (remote && (remote.at || 0) > (saved.at || 0)) saved = remote;
-      audio.src = src;
+      // Audiobookshelf's own apps save there; a newer place from them wins too.
+      if (absPos && absPos.at > (saved.at || 0) && !absPos.finished) saved = { ...saved, pos: absPos.pos, at: absPos.at };
+      if (tracks) audio.setTracks(tracks); else audio.src = src;
       st.offset = saved.offset || 0;
       st.speedIdx = SPEEDS.indexOf(saved.speed) >= 0 ? SPEEDS.indexOf(saved.speed) : 2;
       audio.playbackRate = SPEEDS[st.speedIdx];
@@ -310,6 +336,7 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
     } catch (e) {
       $("libMsg").textContent = e.name === "AbortError" ? "Download cancelled."
         : e.signedOut ? "Connect Google Drive again to open this book."
+        : b.abs ? "Couldn’t open that book: " + e.message
         : b.drive ? "Couldn’t download that book: " + e.message
         : "Couldn’t open that book. Check that its files are in web/books.";
       if (e.signedOut) loadLibrary();
@@ -328,9 +355,17 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
   function wordsHTML(c) {
     return c.words ? c.words.map((w, j) => `<span class="w" data-j="${j}">${esc(w.w)}</span>`).join(" ") : esc(c.text);
   }
+  // Where the audio is: our own player, or (follow mode) the Audiobookshelf app.
+  function clockNow() {
+    if (!st.follow) return { pos: audio.currentTime, dur: audio.duration || (st.book && st.book.duration) || 0 };
+    const n = st.follow.ctl && st.follow.ctl.now();
+    return { pos: n ? n.pos : 0, dur: st.follow.duration || 0 };
+  }
   function update() {
+    if (st.follow) followState();
     if (!st.chunks.length) return;
-    const t = audio.currentTime + st.offset;
+    const now = clockNow();
+    const t = now.pos + st.offset;
     const i = chunkAt(t);
     if (i !== st.idx) {
       st.idx = i;
@@ -344,10 +379,11 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
       const flags = c.words.map((w) => { if (w.s != null) lit = w.s <= t; return lit; });
       $("rCur").querySelectorAll(".w").forEach((el) => el.classList.toggle("lit", flags[+el.dataset.j]));
     }
-    const dur = audio.duration || (st.book && st.book.duration) || 0;
-    $("rBar").style.width = dur ? (100 * audio.currentTime / dur).toFixed(2) + "%" : "0";
-    $("rPct").textContent = dur ? Math.floor(100 * audio.currentTime / dur) + "%" : "";
-    $("rTime").textContent = clock(audio.currentTime) + " / " + clock(dur);
+    const dur = now.dur;
+    $("rBar").style.width = dur ? (100 * Math.min(1, now.pos / dur)).toFixed(2) + "%" : "0";
+    $("rPct").textContent = dur ? Math.floor(100 * Math.min(1, now.pos / dur)) + "%" : "";
+    $("rTime").textContent = clock(now.pos) + " / " + clock(dur);
+    if (st.follow) return;
     $("rState").innerHTML = audio.paused
       ? `<span class="paused-badge">Paused</span>  Select to play, up for options`
       : (SPEEDS[st.speedIdx] !== 1 ? SPEEDS[st.speedIdx] + "× speed" : "");
@@ -372,19 +408,83 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
     const rec = { pos: audio.currentTime, offset: st.offset, speed: SPEEDS[st.speedIdx], at: Date.now() };
     store.set("readalong:" + st.book.id, rec);
     if (Cloud.enabled) Cloud.savePosition(st.book.id, rec, urgent === true);
+    if (st.book.abs) Abs.saveProgress(st.book.item, rec.pos, audio.duration, urgent === true);
   }
   setInterval(() => { if (!audio.paused) save(); }, 5000);
   addEventListener("pagehide", () => save(true));
   document.addEventListener("visibilitychange", () => { if (document.hidden) save(true); });
 
+  // ---------- follow mode: show the text for what plays in the Audiobookshelf app ----------
+  function setChunks(lines) {
+    st.chunks = chunkLines((lines || []).filter((l) => typeof l.start === "number"));
+    st.starts = st.chunks.map((c) => c.start);
+    st.idx = -1;
+  }
+  function startFollow() {
+    audio.pause();
+    st.book = null;
+    st.follow = { ctl: null, item: null, duration: 0, token: 0 };
+    setChunks([]);
+    $("rTitle").textContent = "Following Audiobookshelf";
+    $("rPrev").textContent = ""; $("rNext").textContent = "";
+    $("rCur").textContent = "Asking Audiobookshelf what’s playing…";
+    $("rTime").textContent = ""; $("rPct").textContent = ""; $("rBar").style.width = "0";
+    show("reader");
+    st.follow.ctl = Abs.follow({ onChange: followChanged });
+    cancelAnimationFrame(raf); loop();
+  }
+  async function followChanged(n) {
+    const f = st.follow;
+    if (!f || !n || n.item === f.item) return;
+    f.item = n.item;
+    const token = ++f.token;
+    setChunks([]);
+    $("rPrev").textContent = ""; $("rNext").textContent = "";
+    $("rCur").textContent = "Loading…";
+    const b = st.books.find((x) => x.abs && x.item === n.item);
+    try {
+      const item = await Abs.getItem(n.item);
+      if (token !== f.token) return;
+      f.duration = item.duration;
+      $("rTitle").textContent = item.title;
+      st.offset = (store.get("readalong:abs:" + n.item) || {}).offset || 0;
+      if (!b) {
+        $("rCur").textContent = `No sync file for ${item.title} yet. Make one on the Read-along website.`;
+        return;
+      }
+      const data = JSON.parse(await Cloud.getSyncText(b.drive.sync));
+      if (token !== f.token) return;
+      setChunks(data.lines);
+    } catch (e) {
+      if (token === f.token) $("rCur").textContent = "Couldn’t load the text: " + e.message;
+    }
+  }
+  function followState() {
+    const n = st.follow.ctl && st.follow.ctl.now();
+    $("rState").innerHTML = !n ? "Waiting for Audiobookshelf…"
+      : n.playing ? "Following your phone" + (Math.abs(n.rate - 1) > 0.01 ? ` · ${+n.rate.toFixed(2)}×` : "")
+      : `<span class="paused-badge">Paused</span>  in the Audiobookshelf app`;
+  }
+  function stopFollow() {
+    if (!st.follow) return;
+    if (st.follow.ctl) st.follow.ctl.stop();
+    st.follow = null;
+    cancelAnimationFrame(raf);
+    setChunks([]);
+  }
+  function toLibrary() { closeMenu(); stopFollow(); audio.pause(); show("library"); renderLibrary(); }
+
   // ---------- options menu ----------
   const menuItems = [
-    { label: "Speed", value: () => SPEEDS[st.speedIdx] + "×",
+    { label: "Speed", when: () => !st.follow, value: () => SPEEDS[st.speedIdx] + "×",
       adjust: (d) => { st.speedIdx = Math.max(0, Math.min(SPEEDS.length - 1, st.speedIdx + d)); audio.playbackRate = SPEEDS[st.speedIdx]; } },
     { label: "Text timing", value: () => (st.offset > 0 ? "+" : "") + st.offset.toFixed(2) + "s",
-      adjust: (d) => { st.offset = Math.round((st.offset + d * 0.25) * 100) / 100; st.idx = -1; } },
-    { label: "Back 30 seconds", action: true, run: () => { st.touched = true; audio.currentTime = Math.max(0, audio.currentTime - 30); } },
-    { label: "Library", action: true, run: () => { closeMenu(); audio.pause(); show("library"); renderLibrary(); } },
+      adjust: (d) => {
+        st.offset = Math.round((st.offset + d * 0.25) * 100) / 100; st.idx = -1;
+        if (st.follow && st.follow.item) store.set("readalong:abs:" + st.follow.item, { offset: st.offset });
+      } },
+    { label: "Back 30 seconds", when: () => !st.follow, action: true, run: () => { st.touched = true; audio.currentTime = Math.max(0, audio.currentTime - 30); } },
+    { label: "Library", action: true, run: toLibrary },
     { label: "Remove download", action: true, when: () => st.book && st.book.drive && st.book.offline,
       run: async () => {
         // Frees space on the glasses; the book stays in Google Drive.
@@ -439,11 +539,17 @@ h1 { font-size: 26px; font-weight: 700; margin: 0 0 22px; }
       return;
     }
 
+    if (st.follow) {
+      // Playback is controlled in the Audiobookshelf app; here you only read along.
+      if (k === "ArrowUp") openMenu();
+      else if (k === "Escape" || k === "Backspace") toLibrary();
+      return;
+    }
     if (k === "Enter" || k === " ") audio.paused ? audio.play().catch(() => {}) : audio.pause();
     else if (k === "ArrowLeft") seekChunk(-1);
     else if (k === "ArrowRight") seekChunk(1);
     else if (k === "ArrowUp") openMenu();
-    else if (k === "Escape" || k === "Backspace") { audio.pause(); show("library"); renderLibrary(); }
+    else if (k === "Escape" || k === "Backspace") toLibrary();
   });
 
   loadLibrary();

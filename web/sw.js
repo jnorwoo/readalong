@@ -1,8 +1,8 @@
 // Service worker: keeps the app itself (pages + scripts) available offline, so a book
 // downloaded from Google Drive (kept by cloud.js in Cache Storage) can be opened with
 // no connection. Network first, so a new deploy shows up as soon as you're online.
-const SHELL = "readalong-shell-v1";
-const FILES = ["./", "index.html", "glasses.html", "cloud.js", "cloud-config.js", "library.json"];
+const SHELL = "readalong-shell-v2";
+const FILES = ["./", "index.html", "glasses.html", "cloud.js", "abs.js", "cloud-config.js", "library.json"];
 
 self.addEventListener("install", (e) => {
   self.skipWaiting();

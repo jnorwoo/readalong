@@ -17,8 +17,10 @@ Comes with a public-domain example from Project Gutenberg: *The Gift of the Magi
 | `web/index.html` | Read-along player for computer and phone |
 | `web/glasses.html` | Read-along app for Meta Ray-Ban Display (600×600, controlled with Neural Band) |
 | `web/cloud.js` | Optional Google Drive library + reading-position sync, shared by both apps |
+| `web/abs.js` | Optional Audiobookshelf support (play from your server, or follow its app), and the multi-file player |
 | `tools/sync_worker.py` | Runs on your GPU PC: makes sync files for books added in the web app |
 | `docs/google-drive.md` | How to set up Google Drive |
+| `docs/audiobookshelf.md` | How to use books from an Audiobookshelf server |
 | `tests/` | Tests for the syncing logic (no GPU or WhisperX needed) |
 
 ## Quick start
@@ -49,6 +51,8 @@ python tools/add_to_library.py my-book "My Book.m4b" "My Book.sync.json" --priva
 `--private` keeps the book in `web/books/private/`, which is never committed to git or published. Private books show up when you run the app locally with `tools/serve.py`.
 
 To play your own books on the glasses or your phone, keep them in **Google Drive** instead: pick the audiobook and its ebook in the web app (from any device) and your PC makes the sync file automatically (`python tools/sync_worker.py`), with progress shown on the page. Books already on your PC, including ones split into many MP3 parts, go up with one command: `python tools/sync_worker.py --add "<book folder>"`. Every device you connect can then play the book offline and pick up where you left off. One-time setup: [docs/google-drive.md](docs/google-drive.md).
+
+Books on an **Audiobookshelf** server work too: connect it on the website, click **Make sync file** on a book, and then play it from your server in Read-along (your place is saved back to Audiobookshelf), or keep listening in the Audiobookshelf app and have the glasses **follow** along with the text. See [docs/audiobookshelf.md](docs/audiobookshelf.md).
 
 ## On Meta Ray-Ban Display
 

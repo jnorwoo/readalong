@@ -729,6 +729,10 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--max-words", type=int, default=12,
                     help="max words per display line (smaller = better for glasses)")
     ap.add_argument("--cache-dir", type=Path, help="where transcripts are cached for resuming")
+    ap.add_argument("--no-join", action="store_true",
+                    help="with several audio files, don't join them into one (the player plays them in turn)")
+    ap.add_argument("--durations", help="comma-separated length of each audio file in seconds, to use "
+                    "instead of measuring (e.g. Audiobookshelf's track lengths, so times match its player)")
     args = ap.parse_args(argv)
 
     need_tool("ffmpeg")
@@ -748,7 +752,12 @@ def main(argv: list[str] | None = None) -> None:
     book = load_book(args.book)
     log(f"  '{book.title}': {len(book.tokens):,} words, {len(book.chapters)} sections")
 
-    durations = [audio_duration(p) for p in args.audio]
+    if args.durations:
+        durations = [float(x) for x in args.durations.split(",")]
+        if len(durations) != len(args.audio):
+            sys.exit(f"error: --durations has {len(durations)} values for {len(args.audio)} audio files")
+    else:
+        durations = [audio_duration(p) for p in args.audio]
     offsets = [sum(durations[:i]) for i in range(len(durations))]
     log(f"audio: {len(args.audio)} file(s), {fmt_lrc_time(sum(durations))} total")
 
@@ -766,7 +775,7 @@ def main(argv: list[str] | None = None) -> None:
         log("warning: under half the book was synced. Check the audio and ebook are the same "
             "edition and language (try --language and a larger --model).")
 
-    if len(args.audio) > 1:
+    if len(args.audio) > 1 and not args.no_join:
         joined = out.parent / f"{out.name}.joined{args.audio[0].suffix.lower()}"
         log(f"joining audio files into {joined.name} so the player has one file...")
         join_audio(args.audio, joined)

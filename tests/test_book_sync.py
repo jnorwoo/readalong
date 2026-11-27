@@ -355,6 +355,41 @@ class TestChunking(unittest.TestCase):
         finally:
             shutil.rmtree(tmp)
 
+    def test_given_durations_and_no_join(self):
+        # Audiobookshelf books: its track lengths are used as the offsets, and the
+        # files stay separate (the player plays them in turn).
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            files = []
+            for name, secs in (("a.mp3", 20), ("b.mp3", 10)):
+                subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                                f"sine=f=440:d={secs}", str(tmp / name)], check=True)
+                files.append(tmp / name)
+            words = "one two three four five six seven eight nine ten".split()
+            (tmp / "book.txt").write_text("Chapter 1\n\n" + " ".join(words * 3) + "\n", encoding="utf-8")
+
+            class Reader:
+                def __init__(self, *a): pass
+                def transcribe(self, wav):
+                    d = int(bs.audio_duration(wav))
+                    return [{"word": words[i % 10], "start": i + 0.1, "end": i + 0.6} for i in range(d)]
+
+            real = bs.Transcriber
+            bs.Transcriber = Reader
+            try:
+                bs.main([str(files[0]), str(files[1]), "--book", str(tmp / "book.txt"), "--out", str(tmp / "out"),
+                         "--no-join", "--durations", "20.5,10", "--language", "en"])
+            finally:
+                bs.Transcriber = real
+            data = json.loads((tmp / "out.sync.json").read_text(encoding="utf-8"))
+            self.assertEqual(data["duration"], 30.5)
+            self.assertFalse(list(tmp.glob("*.joined*")), "parts are not joined")
+            starts = [w["s"] for ln in data["lines"] for w in ln["words"] if w["s"] is not None]
+            self.assertTrue(any(s >= 20.5 for s in starts), "second file is offset by the given length")
+            self.assertFalse(any(20 < s < 20.5 for s in starts))
+        finally:
+            shutil.rmtree(tmp)
+
 
 class TestLibrary(unittest.TestCase):
     def test_add_and_replace(self):

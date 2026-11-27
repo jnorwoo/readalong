@@ -156,6 +156,25 @@ progress { width: 100%; height: 10px; accent-color: var(--lamp); }
 #workerNote { font-size: 0.9rem; color: var(--muted); }
 #workerNote code { background: var(--surface); padding: 0.1rem 0.35rem; border-radius: 4px; }
 @media (prefers-color-scheme: dark) { #jobList .js.error { color: #ff8a7a; } }
+#absBox { margin-top: 1.6rem; border-top: 1px solid var(--line); padding-top: 1.2rem; }
+#absBox h3 { font-size: 1rem; margin: 0 0 0.5rem; color: var(--muted); font-weight: 400; }
+#absBox p { margin: 0 0 0.9rem; font-size: 0.95rem; }
+#absBox form { display: grid; gap: 0.6rem; margin-bottom: 0.9rem; }
+#absBox label { display: grid; gap: 0.25rem; font-size: 0.9rem; color: var(--muted); margin-bottom: 0.6rem; }
+#absBox form label { margin-bottom: 0; }
+#absBox label.check { display: flex; gap: 0.5rem; align-items: flex-start; color: var(--ink); }
+#absBox input:not([type="checkbox"]), #absBox select { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 0.45rem 0.6rem; max-width: none; width: 100%; }
+#absBox code { background: var(--surface); padding: 0.1rem 0.35rem; border-radius: 4px; overflow-wrap: anywhere; }
+#absBox .linkish { border: none; padding: 0.55rem 0.4rem; color: var(--muted); text-decoration: underline; }
+#absList { list-style: none; margin: 0.6rem 0 0; padding: 0; display: grid; gap: 0.4rem; max-height: 22rem; overflow-y: auto; }
+#absList li { display: flex; gap: 0.6rem; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 12px; padding: 0.55rem 0.8rem; }
+#absList .t { font-family: var(--read); font-weight: 600; display: block; }
+#absList .a { color: var(--muted); font-size: 0.85rem; }
+#absList .note { color: var(--muted); font-size: 0.85rem; text-align: right; flex: none; max-width: 45%; }
+#absList button { flex: none; font-size: 0.85rem; padding: 0.3rem 0.75rem; }
+#followBar { display: none; align-items: center; gap: 0.6rem; font-size: 0.9rem; color: var(--muted); }
+#followBar.on { display: flex; }
+#followBar b { color: var(--lamp); }
 .status { margin-top: 1rem; font-size: 0.95rem; color: var(--muted); min-height: 1.4em; }
 .status.error { color: #c0392b; }
 @media (prefers-color-scheme: dark) { .status.error { color: #ff8a7a; } }
@@ -276,6 +295,7 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
   <h1 id="bookTitle">Read-along</h1>
   <label class="visually-hidden" for="chapters">Chapter</label>
   <select id="chapters" hidden></select>
+  <span id="followBar" role="status"><span id="followState"></span><button id="followStop">Stop following</button></span>
   <button id="glassBtn" aria-pressed="false" hidden title="Shortcut: G">Glasses view</button>
 </header>
 
@@ -320,6 +340,10 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
         <p id="workerNote"></p>
         <ul id="jobList"></ul>
       </div>
+    </div>
+    <div id="absBox" hidden>
+      <h3>Audiobookshelf</h3>
+      <div id="absBody"></div>
     </div>
   </div>
 </main>
@@ -369,10 +393,13 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
 
 <script src="cloud-config.js"></script>
 <script src="cloud.js"></script>
+<script src="abs.js"></script>
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
-  const audio = $("audio");
+  const Abs = window.ReadalongAbs || null;
+  // Plays one file, or an Audiobookshelf book's many files as one timeline.
+  const audio = Abs ? Abs.trackAudio($("audio")) : $("audio");
   const state = {
     title: "", lines: [], starts: [], chapters: [],
     idx: -1, winStart: 0, winEnd: 0, offset: 0,
@@ -510,12 +537,16 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
       } catch (e) {
         if (e.signedOut) renderDrive(); else setStatus("Couldn’t list your Drive books: " + e.message, true);
       }
+      if (Abs && Abs.configured()) {
+        try { absSynced = await Cloud.listAbsBooks(); books.push(...absSynced); } catch {}
+      }
     }
     library = books;
     $("libBox").hidden = !books.length;
     $("libList").innerHTML = books.map((b, i) =>
       `<li><button data-i="${i}"><span class="t">${esc(b.title)}` +
-      (b.drive ? `<span class="tag">Google Drive${b.offline ? " · on this device" : ""}</span>` : "") +
+      (b.abs ? `<span class="tag">Audiobookshelf</span>`
+        : b.drive ? `<span class="tag">Google Drive${b.offline ? " · on this device" : ""}</span>` : "") +
       `</span>${b.author ? `<span class="a">${esc(b.author)}</span>` : ""}</button>` +
       (b.drive ? `<button class="rm" data-rm="${i}" aria-label="Remove ${esc(b.title)} from your library">Remove</button>` : "") +
       `</li>`).join("");
@@ -562,8 +593,10 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
     const btn = e.target.closest("button"); if (!btn) return;
     if (btn.dataset.rm) return removeFromLibrary(btn, library[+btn.dataset.rm]);
     const b = library[+btn.dataset.i];
+    if (b.abs) return openAbsBook(b);
     if (b.drive) return openDriveBook(b);
     state.bookId = b.id;
+    state.absItem = null;
     state.audioFile = { name: b.audio };
     state.audioName = b.audio.split("/").pop();
     audio.src = b.audio;
@@ -587,6 +620,7 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
       });
       setStatus("");
       state.bookId = b.id;
+      state.absItem = null;
       loadAudio(new File([got.audio], b.title, { type: got.audio.type }));
       await applySync(b.title + ".sync.json", async () => got.sync);
     } catch (e) {
@@ -594,6 +628,162 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
       if (e.signedOut) renderDrive();
     } finally { busy = false; }
   }
+
+  // ---------- Audiobookshelf (abs.js): books stream from your server ----------
+  async function openAbsBook(b) {
+    if (busy) return;
+    busy = true;
+    setStatus("Opening " + b.title + "…");
+    try {
+      const [item, text] = await Promise.all([Abs.getItem(b.item), Cloud.getSyncText(b.drive.sync)]);
+      if (!item.tracks.length) throw new Error("Audiobookshelf has no audio for this book.");
+      setStatus("");
+      state.bookId = b.id;
+      state.absItem = b.item;
+      state.audioFile = { name: item.title };
+      state.audioName = "";
+      audio.setTracks(item.tracks);
+      await applySync(b.title + ".sync.json", async () => text);
+    } catch (e) {
+      setStatus(e.signedOut ? "Connect Google Drive again to open this book." : "Couldn’t open that book: " + e.message, true);
+    } finally { busy = false; }
+  }
+
+  let absSynced = [], absBooks = null, absFilter = "";
+  function renderAbs(msg) {
+    if (!Abs) return;
+    $("absBox").hidden = false;
+    const body = $("absBody");
+    const note = msg ? `<p class="status ${msg.error ? "error" : ""}">${esc(msg.text)}</p>` : "";
+    if (!Abs.configured()) {
+      const drive = Cloud.enabled && Cloud.signedIn();
+      body.innerHTML = `<p>Have your audiobooks on an Audiobookshelf server? Connect it to read along with them here and on your glasses. Audio streams from your server, and your place is saved there, so the Audiobookshelf apps stay in step.</p>
+        <form id="absForm">
+          <label>Server address<input id="absUrl" placeholder="https://abs.example.com" autocomplete="url" required></label>
+          <label>API key<input id="absKey" type="password" autocomplete="off" required></label>
+          ${drive ? `<label class="check"><input type="checkbox" id="absShare" checked> Use it on my other devices too (keeps the address and key in your Google Drive, so the glasses connect without typing)</label>` : ""}
+          <div class="picks"><button type="submit" id="absGo">Connect Audiobookshelf</button></div>
+        </form>
+        <p>In Audiobookshelf: make a key under <b>Settings → API Keys</b>, and add <code>${esc(location.origin)}</code> under <b>Settings → Allowed CORS Origins</b>.${drive ? "" : " Sync files for these books are kept in Google Drive, so connect that too."}</p>${note}`;
+      $("absForm").onsubmit = async (e) => {
+        e.preventDefault();
+        $("absGo").disabled = true;
+        $("absGo").textContent = "Connecting…";
+        try {
+          const s = await Abs.connect($("absUrl").value, $("absKey").value);
+          if ($("absShare") && $("absShare").checked) {
+            try { await Cloud.saveAbsSettings(s); } catch (err) { console.warn(err); }
+          }
+          absBooks = null;
+          renderAbs({ text: `Connected to ${Abs.host()}${s.user ? " as " + s.user : ""}.` });
+          loadLibrary();
+        } catch (err) {
+          renderAbs({ text: err.message, error: true });
+        }
+      };
+      return;
+    }
+    const s = Abs.settings();
+    const driveOn = Cloud.enabled && Cloud.signedIn();
+    body.innerHTML = `<p>Connected to <b>${esc(Abs.host())}</b>${s.user ? " as " + esc(s.user) : ""}. Books with a sync file are in your library above. <b>Follow</b> shows the text for whatever you’re playing in the Audiobookshelf app.</p>
+      <div class="picks"><button id="absFollow">Follow what’s playing</button><button class="linkish" id="absOut">Disconnect</button></div>
+      ${driveOn ? `<label style="margin-top:1.1rem">Find a book on your server<input id="absFind" placeholder="Title or author" value="${esc(absFilter)}" autocomplete="off"></label>
+      <label>Narration language for new sync files<select id="absLang">${$("addLang").innerHTML}</select></label>
+      <ul id="absList"><li><span class="a">Loading your books…</span></li></ul>`
+      : `<p>Connect Google Drive above to make sync files for these books (they’re kept there).</p>`}${note}`;
+    $("absOut").onclick = async () => {
+      Abs.disconnect();
+      if (driveOn) { try { await Cloud.saveAbsSettings(null); } catch {} }
+      absBooks = null; absSynced = [];
+      renderAbs(); loadLibrary();
+    };
+    $("absFollow").onclick = startFollow;
+    if (!driveOn) return;
+    $("absFind").oninput = () => { absFilter = $("absFind").value; renderAbsList(); };
+    renderAbsList();
+  }
+
+  let absJobs = [];
+  async function renderAbsList() {
+    const ul = $("absList");
+    if (!ul) return;
+    if (!absBooks) {
+      try { absBooks = await Abs.listBooks(); }
+      catch (e) { ul.innerHTML = `<li><span class="a">${esc(e.message)}</span></li>`; return; }
+    }
+    const synced = new Set(absSynced.map((b) => b.item));
+    const jobFor = new Map(absJobs.filter((j) => j.item).map((j) => [j.item, j]));
+    const q = absFilter.trim().toLowerCase();
+    const shown = absBooks.filter((b) => !q || (b.title + " " + b.author).toLowerCase().includes(q));
+    ul.innerHTML = shown.length ? shown.slice(0, 200).map((b) => {
+      const j = jobFor.get(b.id);
+      const right = synced.has(b.id) ? `<span class="note">In your library</span>`
+        : j && (j.status === "queued" || j.status === "working") ? `<span class="note">Making the sync file…</span>`
+        : b.ebook ? `<button data-make="${esc(b.id)}">${j && j.status === "error" ? "Try again" : "Make sync file"}</button>`
+        : `<span class="note">Add the ebook to this book in Audiobookshelf first</span>`;
+      return `<li><span><span class="t">${esc(b.title)}</span><span class="a">${esc(b.author)}</span></span>${right}</li>`;
+    }).join("") : `<li><span class="a">${absBooks.length ? "No matches." : "No audiobooks on the server."}</span></li>`;
+  }
+  $("absBody").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-make]"); if (!btn) return;
+    const b = (absBooks || []).find((x) => x.id === btn.dataset.make); if (!b) return;
+    btn.disabled = true; btn.textContent = "Queuing…";
+    try {
+      await Cloud.addAbsJob({ item: b.id, title: b.title, author: b.author, language: $("absLang").value });
+      setStatus(`Queued “${b.title}”. Your PC makes the sync file; the book appears in the library when it’s done.`);
+      refreshJobs();
+    } catch (err) { setStatus("Couldn’t queue it: " + err.message, true); btn.disabled = false; btn.textContent = "Make sync file"; }
+  });
+
+  // ----- follow mode: the text for what plays in the Audiobookshelf app -----
+  function startFollow() {
+    if (state.following) return;
+    const f = state.following = { ctl: null, item: null, duration: 0, token: 0 };
+    audio.pause();
+    $("loader").hidden = true; $("loader").style.display = "none";
+    $("reader").classList.add("on");
+    $("glassBtn").hidden = false;
+    $("followBar").classList.add("on");
+    $("bookTitle").textContent = "Following Audiobookshelf";
+    $("followState").textContent = "Asking Audiobookshelf what’s playing…";
+    f.ctl = Abs.follow({ onChange: followChanged });
+    const tick = () => { if (state.following !== f) return; followState(); if (state.syncLoaded) update(false); requestAnimationFrame(tick); };
+    tick();
+  }
+  async function followChanged(n) {
+    const f = state.following;
+    if (!f || !n || n.item === f.item) return;
+    f.item = n.item;
+    const token = ++f.token;
+    state.syncLoaded = false;
+    $("lines").innerHTML = "";
+    try {
+      const item = await Abs.getItem(n.item);
+      if (token !== f.token) return;
+      f.duration = item.duration;
+      $("bookTitle").textContent = item.title;
+      document.title = item.title + " – Read-along";
+      const b = absSynced.find((x) => x.item === n.item);
+      if (!b) { $("lines").innerHTML = `<p class="line now">No sync file for ${esc(item.title)} yet. Make one under Audiobookshelf on the start page.</p>`; return; }
+      const data = parseJSON(await Cloud.getSyncText(b.drive.sync));
+      if (token !== f.token) return;
+      state.bookId = b.id;
+      state.title = item.title;
+      state.lines = data.lines; state.starts = data.lines.map((l) => l.start); state.chapters = data.chapters;
+      state.offset = (store.get(keyFor()) || {}).offset || 0;
+      state.syncLoaded = true;
+      renderWindow(0); update(true);
+    } catch (e) {
+      if (token === f.token) $("lines").innerHTML = `<p class="line now">Couldn’t load the text: ${esc(e.message)}</p>`;
+    }
+  }
+  function followState() {
+    const n = state.following.ctl.now();
+    $("followState").innerHTML = !n ? "Asking Audiobookshelf what’s playing…"
+      : n.playing ? `<b>Following</b> your Audiobookshelf app${Math.abs(n.rate - 1) > 0.01 ? ` · ${+n.rate.toFixed(2)}×` : ""}`
+      : "Paused in the Audiobookshelf app";
+  }
+  $("followStop").onclick = () => location.reload();
 
   let signIn = null;
   function renderDrive(extra) {
@@ -616,7 +806,7 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
           <button class="linkish" id="driveOut">Disconnect</button>
         </div>${extra || ""}`;
       $("driveAdd").onchange = (e) => { pickForDrive([...e.target.files]); e.target.value = ""; };
-      $("driveOut").onclick = () => { Cloud.signOut(); $("jobsBox").hidden = true; renderDrive(); loadLibrary(); };
+      $("driveOut").onclick = () => { Cloud.signOut(); $("jobsBox").hidden = true; renderDrive(); loadLibrary(); renderAbs(); };
       refreshJobs();
     }
   }
@@ -627,7 +817,7 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
       renderDrive();
       const ok = await signIn.done;
       signIn = null;
-      if (ok) { renderDrive(); loadLibrary(); }
+      if (ok) { renderDrive(); await loadLibrary(); renderAbs(); }
     } catch (e) {
       signIn = null;
       renderDrive(`<p class="status error">${esc(e.message)}</p>`);
@@ -731,7 +921,9 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
         (acts ? `<div class="ja">${acts}</div>` : "") + `</li>`;
     }).join("");
     const done = new Set(jobs.filter((j) => j.status === "done").map((j) => j.id));
-    if ([...done].some((id) => !lastDone.has(id))) loadLibrary();
+    absJobs = jobs;
+    if ([...done].some((id) => !lastDone.has(id))) loadLibrary().then(renderAbsList);
+    else renderAbsList();
     lastDone = done;
     jobTimer = setTimeout(refreshJobs, active ? (document.hidden ? 60000 : 8000) : 60000);
   }
@@ -746,6 +938,13 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
   };
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshJobs(); });
   renderDrive();
+  // Settings saved in Drive on another device (e.g. entered on the phone) are picked up here too.
+  (async () => {
+    if (Abs && !Abs.configured() && Cloud.enabled && Cloud.signedIn()) {
+      try { const s = await Cloud.getAbsSettings(); if (s && s.token) { Abs.adopt(s); loadLibrary(); } } catch {}
+    }
+    renderAbs();
+  })();
 
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
 
@@ -798,6 +997,15 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
         showResume(remote.pos, " (from your other device)");
       });
     }
+    if (state.absItem && state.bookId === "abs:" + state.absItem) {
+      const key = bookKey();
+      Abs.getProgress(state.absItem).then((p) => {
+        if (!p || p.finished || key !== bookKey() || p.pos <= 5) return;
+        if (saved && (saved.at || 0) >= p.at) return;
+        if (Math.abs(p.pos - audio.currentTime) < 5) return;
+        showResume(p.pos, " (from Audiobookshelf)");
+      }).catch(() => {});
+    }
   }
 
   function showResume(pos, note) {
@@ -827,7 +1035,8 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
     state.chapters.forEach((c, i) => { if (c.start <= t) ans = i; });
     return ans;
   }
-  const textTime = () => audio.currentTime + state.offset;
+  const followPos = () => { const n = state.following.ctl.now(); return n ? n.pos : 0; };
+  const textTime = () => (state.following ? followPos() : audio.currentTime) + state.offset;
 
   // ---------- rendering (only a window of lines around the current one) ----------
   const WIN = 40;
@@ -906,12 +1115,15 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
   $("seek").addEventListener("change", () => { seeking = false; seekTo(audio.duration * $("seek").value / 1000); });
   $("speed").onchange = () => { audio.playbackRate = parseFloat($("speed").value); save(); };
   $("chapters").onchange = () => { const c = state.chapters[+$("chapters").value]; if (c) seekTo(c.start - state.offset); };
-  function nudge(d) { state.offset = Math.round((state.offset + d) * 10) / 10; $("offset").textContent = state.offset.toFixed(1) + "s"; update(true); save(); }
+  function nudge(d) {
+    state.offset = Math.round((state.offset + d) * 10) / 10; $("offset").textContent = state.offset.toFixed(1) + "s"; update(true);
+    if (state.following) store.set(keyFor(), { ...(store.get(keyFor()) || {}), offset: state.offset }); else save();
+  }
   $("earlier").onclick = () => nudge(0.25);
   $("later").onclick = () => nudge(-0.25);
 
   $("lines").addEventListener("click", (e) => {
-    const p = e.target.closest(".line"); if (!p) return;
+    const p = e.target.closest(".line"); if (!p || state.following) return;
     const l = state.lines[+p.dataset.i];
     seekTo(l.start - state.offset + 0.01);
     if (audio.paused) audio.play();
@@ -954,10 +1166,11 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
   // Saved on this device every 5 s while playing; synced to Google Drive (if connected)
   // at most every 30 s, and right away on pause or when the page is hidden.
   function save(urgent) {
-    if (!state.syncLoaded || !state.touched) return;
+    if (!state.syncLoaded || !state.touched || state.following) return;
     const rec = { pos: audio.currentTime, offset: state.offset, speed: audio.playbackRate, at: Date.now() };
     store.set(keyFor(), rec);
     if (Cloud.enabled) Cloud.savePosition(bookKey(), rec, urgent === true);
+    if (state.absItem && Abs) Abs.saveProgress(state.absItem, rec.pos, audio.duration, urgent === true);
   }
   setInterval(() => { if (!audio.paused) save(); }, 5000);
   addEventListener("pagehide", () => save(true));

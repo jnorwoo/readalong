@@ -204,7 +204,7 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/drive/v3/files":
             q = qs.get("q", [""])[0]
             out = [f for f in FILES.values() if not ("trashed=false" in q and f.get("trashed"))]
-            for key, val in re.findall(r"key='(\w+)' and value='(\w+)'", q):
+            for key, val in re.findall(r"key='(\w+)' and value='([^']*)'", q):
                 out = [f for f in out if f["appProperties"].get(key) == val]
             mt = re.search(r"mimeType='([^']+)'", q)
             if mt:

@@ -13,6 +13,11 @@ and puts the finished book into your Drive library. Progress shows in the web ap
         # sync a book folder on this PC (one audio file or many parts, plus the
         # ebook), then upload it to your Drive library; progress shows on the website
 
+Books on an Audiobookshelf server work too: "Make sync file" on the website queues
+a job, and this helper downloads the audio and ebook from the server (using the
+address and API key the website saved in your Drive), and saves only the sync
+file to Drive. The audio stays on the server.
+
 First run asks for the Google client ID and secret (the same ones as in
 docs/google-drive.md) and shows a code to enter at google.com/device. They're
 saved in ~/.readalong/worker.json, outside the repo.
@@ -332,12 +337,140 @@ class Job:
             log(f"  (couldn't update progress: {e})")
 
 
+# --------------------------------------------------------------------------
+# Audiobookshelf
+# --------------------------------------------------------------------------
+
+class Abs:
+    """The bits of the Audiobookshelf API a sync job needs (book details and file downloads)."""
+
+    def __init__(self, url: str, token: str):
+        self.url, self.token = url.rstrip("/"), token
+
+    @classmethod
+    def from_drive(cls, drive: Drive) -> "Abs":
+        files = drive.find(tagged("abs-config"), "id")
+        cfg = drive.read_json(files[0]["id"]) if files else {}
+        if not cfg.get("url") or not cfg.get("token"):
+            raise RuntimeError("Audiobookshelf isn't connected. On the website, connect it with "
+                               "\"Use it on my other devices too\" ticked, then Try again.")
+        return cls(cfg["url"], cfg["token"])
+
+    def _open(self, path: str, timeout: int = 120):
+        req = urllib.request.Request(self.url + path, headers={"Authorization": "Bearer " + self.token})
+        try:
+            return urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                raise RuntimeError("Audiobookshelf didn't accept the API key. Connect it again on the website.") from None
+            raise RuntimeError(f"Audiobookshelf error {e.code} for {path.split('?')[0]}") from None
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"couldn't reach Audiobookshelf at {self.url}: {e.reason}") from None
+
+    def get_json(self, path: str) -> dict:
+        with self._open(path) as r:
+            return json.loads(r.read() or b"{}")
+
+    def download(self, path: str, dest: Path, progress=None) -> None:
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        with self._open(path, timeout=600) as r, open(tmp, "wb") as f:
+            got = 0
+            while chunk := r.read(1 << 20):
+                f.write(chunk)
+                got += len(chunk)
+                if progress:
+                    progress(got)
+        tmp.replace(dest)
+
+
+def run_abs_job(drive: Drive, job: Job, f: dict, spec: dict, worker: str, sync_args: list[str]) -> None:
+    """Sync a book that lives on Audiobookshelf; only the sync file goes to Drive."""
+    abs_ = Abs.from_drive(drive)
+    item_id = spec["item"]
+    item = abs_.get_json(f"/api/items/{urllib.parse.quote(item_id)}?expanded=1")
+    media = item.get("media") or {}
+    tracks = media.get("tracks") or []
+    ebook_file = media.get("ebookFile")
+    title = spec.get("title") or (media.get("metadata") or {}).get("title") or "book"
+    author = spec.get("author") or (media.get("metadata") or {}).get("authorName") or ""
+    if not tracks:
+        raise RuntimeError("this book has no audio on the Audiobookshelf server")
+    if not ebook_file:
+        raise RuntimeError("this book has no ebook in Audiobookshelf. Add the EPUB, PDF or TXT to it there, then Try again.")
+    ext = (ebook_file.get("metadata") or {}).get("ext") or "." + (ebook_file.get("ebookFormat") or "epub")
+    if ext.lower() not in EBOOK_EXT:
+        raise RuntimeError(f"the ebook in Audiobookshelf is {ext.lstrip('.').upper()}; EPUB, PDF or TXT are needed")
+
+    work = WORK_DIR / f["id"]
+    work.mkdir(parents=True, exist_ok=True)
+
+    # 1. Download (0-10%): the ebook first (and check it), then each audio file.
+    ebook = work / ("book" + ext.lower())
+    if not ebook.exists():
+        log("  downloading the ebook from Audiobookshelf...")
+        job.report("Downloading the ebook from Audiobookshelf", 0, force=True)
+        abs_.download(f"/api/items/{urllib.parse.quote(item_id)}/ebook", ebook)
+    check_ebook(ebook)
+    total = sum(int((t.get("metadata") or {}).get("size") or 0) for t in tracks) or 1
+    done_bytes = 0
+    audio: list[Path] = []
+    for n, t in enumerate(tracks):
+        t_ext = (t.get("metadata") or {}).get("ext") or Path((t.get("metadata") or {}).get("filename") or ".mp3").suffix
+        dest = work / f"track{n + 1:03d}{t_ext.lower()}"
+        size = int((t.get("metadata") or {}).get("size") or 0)
+        if not (dest.exists() and (not size or dest.stat().st_size == size)):
+            if n == 0 or n % 10 == 0:
+                log(f"  downloading audio from Audiobookshelf ({n + 1} of {len(tracks)})...")
+            abs_.download(t["contentUrl"], dest, lambda got, base=done_bytes: job.report(
+                f"Downloading the audio to your PC ({n + 1} of {len(tracks)})" if len(tracks) > 1
+                else "Downloading the audio to your PC", 1 + 9 * (base + got) / total))
+        done_bytes += size
+        audio.append(dest)
+
+    # 2. Sync (10-97%), with Audiobookshelf's own track lengths so the times match its player.
+    durations = ",".join(f"{float(t.get('duration') or 0):.3f}" for t in tracks)
+    extra = ["--no-join"] + (["--durations", durations] if all(t.get("duration") for t in tracks) else [])
+    out = work / "book"
+    data = run_sync(job, audio, ebook, out, work / "cache", spec.get("language"), sync_args + extra, 10, 97)
+
+    # 3. Save the sync file to Drive (97-100%).
+    job.report("Adding to your library", 97, force=True)
+    data["title"] = title
+    data["audio"] = "audiobookshelf:" + item_id
+    data["duration"] = round(float(media.get("duration") or data.get("duration") or 0), 3)
+    folder = drive.find(tagged("root") + " and mimeType='application/vnd.google-apps.folder'", "id")
+    for old in drive.find(tagged("abssync") + f" and appProperties has {{ key='item' and value='{item_id}' }}", "id"):
+        drive.patch(old["id"], {"trashed": True})        # re-synced: the new file replaces the old
+    sync_id = drive.create({
+        "name": f"{clip(title, 80)}.sync.json", "parents": [folder[0]["id"]] if folder else [],
+        "mimeType": "application/json",
+        "appProperties": {"ra": "abssync", "item": item_id, "title": clip(title, 110),
+                          "author": clip(author, 110), "duration": str(round(data["duration"]))},
+    }, json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), "application/json")
+    job.report("Ready in your library", 100, force=True, status="done", book=sync_id)
+    shutil.rmtree(work, ignore_errors=True)
+    log(f"  done: '{title}' (Audiobookshelf) is in your library.")
+
+
+def check_ebook(ebook: Path) -> None:
+    """Fail early, before the big audio download, if book_sync can't read the ebook."""
+    check = subprocess.run(
+        [PYTHON, "-c", "import sys; sys.path.insert(0, 'tools'); import book_sync as b; "
+         "from pathlib import Path; b.load_book(Path(sys.argv[1]))", str(ebook)],
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if check.returncode != 0:
+        lines = [l for l in (check.stderr or check.stdout).splitlines() if l.strip()]
+        raise RuntimeError(lines[-1] if lines else "couldn't read the ebook")
+
+
 def run_job(drive: Drive, f: dict, worker: str, sync_args: list[str]) -> None:
     job = Job(drive, f)
     spec = drive.read_json(f["id"])
     title = spec.get("title") or "book"
     log(f"job: {title}")
     job.report("Starting on " + worker, 1, force=True, status="working", worker=clip(worker, 60), error=None)
+    if spec.get("source") == "abs":
+        return run_abs_job(drive, job, f, spec, worker, sync_args)
     work = WORK_DIR / f["id"]
     work.mkdir(parents=True, exist_ok=True)
     audio = work / ("audio" + (Path(spec.get("audioName", "")).suffix.lower() or ".m4b"))
@@ -352,13 +485,7 @@ def run_job(drive: Drive, f: dict, worker: str, sync_args: list[str]) -> None:
             drive.download(src, dest, lambda got, total, lo=lo, hi=hi, what=what: job.report(
                 f"Downloading {what} to your PC", lo + (hi - lo) * got / max(1, total)))
         if what == "ebook":
-            check = subprocess.run(
-                [PYTHON, "-c", "import sys; sys.path.insert(0, 'tools'); import book_sync as b; "
-                 "from pathlib import Path; b.load_book(Path(sys.argv[1]))", str(ebook)],
-                cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
-            if check.returncode != 0:
-                lines = [l for l in (check.stderr or check.stdout).splitlines() if l.strip()]
-                raise RuntimeError(lines[-1] if lines else "couldn't read the ebook")
+            check_ebook(ebook)
 
     # 2. Sync (10-95%).
     out = work / "book"

@@ -12,7 +12,8 @@ Pipeline:
 3. `web/index.html` (desktop/phone) and `web/glasses.html` (glasses) read the library and play books. No build step, no framework.
 4. Optional Google Drive (`web/cloud.js`, shared by both pages; setup in `docs/google-drive.md`): users add their own books (audio + sync.json) to a "Read-along" Drive folder from the web app, and reading positions sync across devices via `progress.json` there. Sign-in is Google's device-code flow (code entered at google.com/device), which works on the glasses' D-pad. Scope is `drive.file` only. Opened Drive books are cached in Cache Storage for offline play; `web/sw.js` caches the app shell. `web/cloud-config.js` stays empty in git; the Pages workflow fills it from the `GOOGLE_CLIENT_ID` variable and `GOOGLE_CLIENT_SECRET` secret.
 5. Sync jobs: in index.html, picking audio + ebook (EPUB/PDF/TXT) uploads both and creates a job file (appProperties ra=job, status queued/working/done/error, stage, progress). `tools/sync_worker.py` (stdlib only; config + token in `~/.readalong/worker.json`, work files in `~/.readalong/jobs/<job id>`) polls Drive, checks the ebook loads, downloads the audio, runs book_sync.py and parses its "[file i/n chunk j/m]" log lines for progress, then creates the book entry pointing at the already-uploaded audio. Heartbeat: a ra=worker file's `seen` appProperty. `--add FOLDER` syncs a local folder (audio parts in natural order + ebook; "Author - Title" folder names), joins parts via book_sync, uploads the joined audio with a resumable upload (`Drive.upload_large`), and reports progress through a job tagged `local` (the watcher skips those; the web hides Try again for them).
-6. Removing a Drive book (index.html "Remove", tap twice): `removeBook` trashes the sync file, audio, and any job pointing at it (plus that job's ebook), clears the position locally and in progress.json, and returns data for `restoreBook` (Undo). glasses.html deletes downloads of books no longer listed in Drive. Tested end to end against tests/mock_google.py with real WhisperX (Nov 2026).
+6. Optional Audiobookshelf (`web/abs.js`, docs in `docs/audiobookshelf.md`): server URL + API key (stored locally, optionally in Drive as ra=abs-config `audiobookshelf.json` so the glasses and the worker get them). The key travels as `?token=` because ABS's CORS answers `Access-Control-Allow-Headers: *`, which never covers Authorization; the user must add the site's origin to ABS "Allowed CORS Origins". Player mode streams the item's tracks (`TrackAudio`, used by both pages for every book, plays many files as one timeline) and PATCHes `/api/me/progress/:id`. Follow mode polls `/api/me` every 2.5 s, takes the newest mediaProgress, infers playing/rate from successive reports (the ABS app reports every ~10-15 s) and estimates the server clock offset from when reports appear. Sync files for ABS books are Drive files tagged ra=abssync with appProperties item=<library item id>; jobs carry source=abs + item, and the worker downloads tracks/ebook from ABS and runs book_sync with `--no-join --durations` (ABS track lengths). Tested against tests/mock_audiobookshelf.py (Nov 2026); checked against the ABS v2.38 source; not yet against a real server.
+7. Removing a Drive book (index.html "Remove", tap twice): `removeBook` trashes the sync file, audio, and any job pointing at it (plus that job's ebook), clears the position locally and in progress.json, and returns data for `restoreBook` (Undo). glasses.html deletes downloads of books no longer listed in Drive. Tested end to end against tests/mock_google.py with real WhisperX (Nov 2026).
 
 ## Commands
 
@@ -20,8 +21,9 @@ Pipeline:
 pip install -r requirements.txt               # whisperx (pulls in torch)
 python tools/fetch_example.py [--device cpu]  # Gutenberg example: download, sync, add to library
 python tools/serve.py [--lan]                 # http://localhost:8000 and /glasses.html
-python -m unittest discover tests -v          # 15 tests, no GPU/WhisperX needed (ffmpeg needed for 1, pypdf for 5)
+python -m unittest discover tests -v          # 16 tests, no GPU/WhisperX needed (ffmpeg needed for 2, pypdf for 5)
 python tests/mock_google.py                   # fake Google sign-in + Drive on :8765 for testing cloud.js (see docs/google-drive.md)
+python tests/mock_audiobookshelf.py --library examples/abs-library   # fake Audiobookshelf on :8766 (key test-key)
 python tools/sync_worker.py [--once]          # on the GPU PC: make sync files for books queued in the web app
 ```
 
@@ -75,7 +77,7 @@ Open questions to check in Meta's docs:
 ## Constraints
 
 - **Copyright:** only public-domain books may be committed or published. Purchased books stay in git-ignored `web/books/private/`. Never add tools for removing DRM (Audible AAX, Kindle).
-- Keep the web apps buildless; GitHub Pages serves `web/` as-is. Each page is one file, except the shared optional Google Drive code in `web/cloud.js` (+ `cloud-config.js`, `sw.js`).
+- Keep the web apps buildless; GitHub Pages serves `web/` as-is. Each page is one file, except the shared code in `web/cloud.js` (Google Drive, + `cloud-config.js`, `sw.js`) and `web/abs.js` (Audiobookshelf + TrackAudio).
 - Pin exact versions for any CDN script added.
 - Keep `book_sync.py` importable without whisperx installed (the import is lazy) so tests run without a GPU.
 
