@@ -717,14 +717,41 @@ input[type="range"] { width: 100%; accent-color: var(--lamp); margin: 0; }
     const shown = absBooks.filter((b) => !q || (b.title + " " + b.author).toLowerCase().includes(q));
     ul.innerHTML = shown.length ? shown.slice(0, 200).map((b) => {
       const j = jobFor.get(b.id);
+      const twin = synced.has(b.id) ? null : driveTwin(b);
       const right = synced.has(b.id) ? `<span class="note">In your library</span>`
         : j && (j.status === "queued" || j.status === "working") ? `<span class="note">Making the sync file…</span>`
+        : twin ? `<button data-link="${esc(b.id)}" title="Reuse the sync file of “${esc(twin.title)}” from your Google Drive">Use your existing sync file</button>`
         : b.ebook ? `<button data-make="${esc(b.id)}">${j && j.status === "error" ? "Try again" : "Make sync file"}</button>`
         : `<span class="note">Add the ebook to this book in Audiobookshelf first</span>`;
       return `<li><span><span class="t">${esc(b.title)}</span><span class="a">${esc(b.author)}</span></span>${right}</li>`;
     }).join("") : `<li><span class="a">${absBooks.length ? "No matches." : "No audiobooks on the server."}</span></li>`;
   }
+  // A book already synced into Google Drive (e.g. with sync_worker.py --add) whose title
+  // matches: its sync file works for the Audiobookshelf copy too, if the audio is the same.
+  const normTitle = (t) => String(t || "").toLowerCase().replace(/\(.*?\)|\[.*?\]/g, " ").replace(/[^a-z0-9]+/g, " ").trim();
+  function driveTwin(absBook) {
+    const t = normTitle(absBook.title);
+    if (!t) return null;
+    return library.find((x) => x.drive && !x.abs && normTitle(x.title) === t) || null;
+  }
   $("absBody").addEventListener("click", async (e) => {
+    const link = e.target.closest("button[data-link]");
+    if (link) {
+      const b = (absBooks || []).find((x) => x.id === link.dataset.link);
+      const twin = b && driveTwin(b);
+      if (!twin) return;
+      link.disabled = true; link.textContent = "Linking…";
+      try {
+        await Cloud.linkAbsSync(twin, { item: b.id, title: b.title, author: b.author || twin.author, duration: b.duration });
+        const diff = twin.duration && b.duration ? Math.abs(twin.duration - b.duration) : 0;
+        setStatus(diff > 5
+          ? `Linked “${b.title}”, but the two recordings differ in length by ${Math.round(diff)} seconds, so the text may drift. If it does, use Make sync file instead.`
+          : `“${b.title}” on Audiobookshelf now uses your existing sync file. It’s in the library, and Follow works with it.`, diff > 5);
+        await loadLibrary();
+        renderAbsList();
+      } catch (err) { setStatus("Couldn’t link it: " + err.message, true); link.disabled = false; link.textContent = "Use your existing sync file"; }
+      return;
+    }
     const btn = e.target.closest("button[data-make]"); if (!btn) return;
     const b = (absBooks || []).find((x) => x.id === btn.dataset.make); if (!b) return;
     btn.disabled = true; btn.textContent = "Queuing…";

@@ -26,6 +26,8 @@ Both modes need a **sync file** for the book. Your PC makes it, the same way as 
 
    The book needs its ebook (EPUB, PDF or TXT) attached in Audiobookshelf. Books without one say so.
 
+   Already synced the same book into Google Drive (with `sync_worker.py --add` or the website upload)? The book then shows **Use your existing sync file** instead. Clicking it reuses that sync file, so nothing is transcribed again. This works when the server has the same recording. If the two recordings' lengths differ by more than a few seconds, the website warns you that the text may drift; use **Make sync file** in that case.
+
 ## Using it
 
 **On the glasses**, Audiobookshelf books appear in the library tagged "Audiobookshelf", and **Follow Audiobookshelf** appears at the bottom of the list.

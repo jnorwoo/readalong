@@ -450,6 +450,20 @@
     return (await fetchFile(fileId)).text();
   }
 
+  /**
+   * Reuse a Drive book's sync file for the same book on Audiobookshelf (no new transcription).
+   * Times match when the server has the same audio, e.g. the same parts that were joined.
+   */
+  async function linkAbsSync(driveBook, { item, title, author = "", duration = 0 }) {
+    const text = await getSyncText(driveBook.drive.sync);
+    const data = JSON.parse(text);
+    return createFile({
+      name: `${title}.sync.json`, parents: [await folder()], mimeType: "application/json",
+      appProperties: { ra: "abssync", item, title: clip(title, 110), author: clip(author, 110),
+                       duration: String(Math.round(duration || data.duration || 0)) },
+    }, new Blob([text], { type: "application/json" }));
+  }
+
   /** Queue a sync job for an Audiobookshelf book: the PC helper fetches audio + ebook from the server. */
   async function addAbsJob({ item, title, author = "", language = "" }) {
     const parent = await folder();
@@ -549,7 +563,7 @@
     signedIn, startSignIn, signOut,
     listBooks, addBook, getBook, isDownloaded, removeDownload, removeBook, restoreBook,
     addBookForSync, listJobs, workerSeen, retryJob, removeJob,
-    listAbsBooks, getSyncText, addAbsJob, getAbsSettings, saveAbsSettings,
+    listAbsBooks, getSyncText, addAbsJob, linkAbsSync, getAbsSettings, saveAbsSettings,
     getPosition, savePosition,
   };
 })();
